@@ -739,30 +739,39 @@ def _path_parameter_data(path: PolylineSubpath) -> tuple[tuple[tuple[Point, Poin
     return segments, tuple(prefixes), total
 
 
-def _branch_angles(path: PolylineSubpath, segment_index: int, parameter: float) -> tuple[float, ...]:
-    """Return the one or two path rays incident to an isolated intersection."""
+def _branch_rays(
+    path: PolylineSubpath, segment_index: int, parameter: float
+) -> tuple[tuple[float, str], ...]:
+    """Return angle/direction labels for rays incident to an intersection."""
     segments = tuple(zip(path.points, path.points[1:]))
     start, end = segments[segment_index]
     point = (
         start[0] + parameter * (end[0] - start[0]),
         start[1] + parameter * (end[1] - start[1]),
     )
-    ray_points: list[Point]
+    ray_points: list[tuple[Point, str]]
     if not _parameters_close(parameter, 0.0) and not _parameters_close(parameter, 1.0):
-        ray_points = [start, end]
+        ray_points = [(start, "before"), (end, "after")]
     elif _parameters_close(parameter, 0.0):
-        ray_points = [end]
+        ray_points = [(end, "after")]
         if segment_index > 0:
-            ray_points.append(segments[segment_index - 1][0])
+            ray_points.append((segments[segment_index - 1][0], "before"))
         elif path.closed:
-            ray_points.append(segments[-1][0])
+            ray_points.append((segments[-1][0], "before"))
     else:
-        ray_points = [start]
+        ray_points = [(start, "before")]
         if segment_index + 1 < len(segments):
-            ray_points.append(segments[segment_index + 1][1])
+            ray_points.append((segments[segment_index + 1][1], "after"))
         elif path.closed:
-            ray_points.append(segments[0][1])
-    return tuple(math.atan2(other[1] - point[1], other[0] - point[0]) for other in ray_points)
+            ray_points.append((segments[0][1], "after"))
+    return tuple(
+        (math.atan2(other[1] - point[1], other[0] - point[0]), direction)
+        for other, direction in ray_points
+    )
+
+
+def _branch_angles(path: PolylineSubpath, segment_index: int, parameter: float) -> tuple[float, ...]:
+    return tuple(angle for angle, _ in _branch_rays(path, segment_index, parameter))
 
 
 def _isolated_intersection_kind(
@@ -790,6 +799,241 @@ def _isolated_intersection_kind(
         for index in range(len(cyclic_labels))
     )
     return "transverse" if alternating else "touch"
+
+
+@dataclass(frozen=True)
+class _LocatedIntersection:
+    location: Point
+    uncertainty: float
+    first_path: int
+    second_path: int
+    kind: str
+    first_position: float
+    second_position: float
+    first_rays: tuple[tuple[float, str], ...]
+    second_rays: tuple[tuple[float, str], ...]
+
+
+_IncidentBranch = tuple[int, int, int]
+_PairIncidence = tuple[int, int, str, int, int]
+_IncidentRay = tuple[int, int, str]
+_JunctionIncidence = tuple[
+    tuple[_IncidentBranch, ...], tuple[_PairIncidence, ...], tuple[_IncidentRay, ...]
+]
+
+
+def _located_intersection_events(subpaths: Sequence[PolylineSubpath]) -> tuple[_LocatedIntersection, ...]:
+    """Return canonical pair/self events with robust representative locations."""
+    path_data = [_path_parameter_data(path) for path in subpaths]
+    located: list[_LocatedIntersection] = []
+    for first_index, (first_segments, first_prefixes, first_total) in enumerate(path_data):
+        for second_index in range(first_index, len(path_data)):
+            second_segments, second_prefixes, second_total = path_data[second_index]
+            pair_events: list[_LocatedIntersection] = []
+            for left_index, first_segment in enumerate(first_segments):
+                for right_index, second_segment in enumerate(second_segments):
+                    if first_index == second_index:
+                        if left_index >= right_index or abs(left_index - right_index) <= 1:
+                            continue
+                        if subpaths[first_index].closed and {left_index, right_index} == {
+                            0,
+                            len(first_segments) - 1,
+                        }:
+                            continue
+                    for kind, first_low, first_high, second_low, second_high in _segment_intersection_events(
+                        first_segment, second_segment
+                    ):
+                        first_midpoint = (first_low + first_high) / 2.0
+                        second_midpoint = (second_low + second_high) / 2.0
+                        first_position = (
+                            first_prefixes[left_index] + first_midpoint * _distance(*first_segment)
+                        ) / first_total
+                        second_position = (
+                            second_prefixes[right_index] + second_midpoint * _distance(*second_segment)
+                        ) / second_total
+                        if kind == "transverse":
+                            event_kind = _isolated_intersection_kind(
+                                subpaths[first_index],
+                                left_index,
+                                first_midpoint,
+                                subpaths[second_index],
+                                right_index,
+                                second_midpoint,
+                            )
+                        elif kind == "touch" and any(
+                            _parameters_close(position, 0.0) or _parameters_close(position, 1.0)
+                            for position in (first_position, second_position)
+                        ):
+                            event_kind = "endpoint"
+                        else:
+                            event_kind = kind
+                        first_location = (
+                            first_segment[0][0]
+                            + first_midpoint * (first_segment[1][0] - first_segment[0][0]),
+                            first_segment[0][1]
+                            + first_midpoint * (first_segment[1][1] - first_segment[0][1]),
+                        )
+                        second_location = (
+                            second_segment[0][0]
+                            + second_midpoint * (second_segment[1][0] - second_segment[0][0]),
+                            second_segment[0][1]
+                            + second_midpoint * (second_segment[1][1] - second_segment[0][1]),
+                        )
+                        location = (
+                            first_location[0] + (second_location[0] - first_location[0]) / 2.0,
+                            first_location[1] + (second_location[1] - first_location[1]) / 2.0,
+                        )
+                        local_scale = max(
+                            abs(value)
+                            for point in (*first_segment, *second_segment, location)
+                            for value in point
+                        )
+                        event = _LocatedIntersection(
+                            location=location,
+                            uncertainty=32.0 * math.ulp(local_scale),
+                            first_path=first_index,
+                            second_path=second_index,
+                            kind=event_kind,
+                            first_position=first_position,
+                            second_position=second_position,
+                            first_rays=_branch_rays(
+                                subpaths[first_index], left_index, first_midpoint
+                            ),
+                            second_rays=_branch_rays(
+                                subpaths[second_index], right_index, second_midpoint
+                            ),
+                        )
+                        if not any(
+                            existing.kind == event.kind
+                            and _parameters_close(existing.first_position, event.first_position)
+                            and _parameters_close(existing.second_position, event.second_position)
+                            for existing in pair_events
+                        ):
+                            pair_events.append(event)
+            located.extend(pair_events)
+    return tuple(located)
+
+
+def _locations_close(first: _LocatedIntersection, second: _LocatedIntersection) -> bool:
+    coordinate_scale = max(
+        abs(first.location[0]),
+        abs(first.location[1]),
+        abs(second.location[0]),
+        abs(second.location[1]),
+    )
+    tolerance = max(first.uncertainty, second.uncertainty, 32.0 * math.ulp(coordinate_scale))
+    return (
+        abs(first.location[0] - second.location[0]) <= tolerance
+        and abs(first.location[1] - second.location[1]) <= tolerance
+    )
+
+
+def _global_incidence_signature(subpaths: Sequence[PolylineSubpath]) -> tuple[_JunctionIncidence, ...]:
+    """Encode global planar junction incidence without absolute coordinates.
+
+    Pair events are clustered only when every member is within a scale-aware
+    32-ULP coordinate bound of every other member, preventing single-linkage
+    chains from merging distinct nearby junctions. Per-path intersection ranks
+    preserve arrangement while allowing a junction to move during simplification.
+    """
+    events = _located_intersection_events(subpaths)
+    if not events:
+        return ()
+
+    clusters: list[list[int]] = []
+    for event_index in sorted(
+        range(len(events)),
+        key=lambda index: (
+            events[index].location,
+            events[index].first_path,
+            events[index].second_path,
+            events[index].kind,
+        ),
+    ):
+        for cluster in clusters:
+            if all(_locations_close(events[event_index], events[member]) for member in cluster):
+                cluster.append(event_index)
+                break
+        else:
+            clusters.append([event_index])
+
+    occurrence_ranks: dict[tuple[int, str], int] = {}
+    for path_index in range(len(subpaths)):
+        occurrences: list[tuple[int, str, float]] = []
+        for event_index, event in enumerate(events):
+            if event.first_path == path_index:
+                occurrences.append((event_index, "first", event.first_position))
+            if event.second_path == path_index:
+                occurrences.append((event_index, "second", event.second_position))
+        occurrences.sort(key=lambda occurrence: occurrence[2])
+        rank = 0
+        previous: float | None = None
+        for event_index, side, position in occurrences:
+            if previous is not None and not _parameters_close(position, previous):
+                rank += 1
+            occurrence_ranks[(event_index, side)] = rank
+            previous = position
+
+    encoded_clusters: list[_JunctionIncidence] = []
+    for cluster in clusters:
+        pair_structure = tuple(
+            sorted(
+                (
+                    events[event_index].first_path,
+                    events[event_index].second_path,
+                    events[event_index].kind,
+                    occurrence_ranks[(event_index, "first")],
+                    occurrence_ranks[(event_index, "second")],
+                )
+                for event_index in cluster
+            )
+        )
+        incident_occurrences = {
+            (
+                path_index,
+                occurrence_ranks[(event_index, side)],
+                1
+                if _parameters_close(position, 0.0) or _parameters_close(position, 1.0)
+                else 2,
+            )
+            for event_index in cluster
+            for path_index, side, position in (
+                (
+                    events[event_index].first_path,
+                    "first",
+                    events[event_index].first_position,
+                ),
+                (
+                    events[event_index].second_path,
+                    "second",
+                    events[event_index].second_position,
+                ),
+            )
+        }
+        ray_angles: dict[_IncidentRay, float] = {}
+        for event_index in cluster:
+            event = events[event_index]
+            for path_index, side, rays in (
+                (event.first_path, "first", event.first_rays),
+                (event.second_path, "second", event.second_rays),
+            ):
+                path_rank = occurrence_ranks[(event_index, side)]
+                for angle, direction in rays:
+                    ray_angles.setdefault((path_index, path_rank, direction), angle)
+        angular_order = tuple(
+            ray
+            for ray, _ in sorted(
+                ray_angles.items(), key=lambda item: (item[1], item[0])
+            )
+        )
+        cyclic_order = min(
+            angular_order[index:] + angular_order[:index]
+            for index in range(len(angular_order))
+        )
+        encoded_clusters.append(
+            (tuple(sorted(incident_occurrences)), pair_structure, cyclic_order)
+        )
+    return tuple(sorted(encoded_clusters))
 
 
 def _intersection_signature(
@@ -906,6 +1150,7 @@ def simplify_subpaths(
         not winding_preserved
         or _containment_signature(originals) != _containment_signature(simplified)
         or _intersection_signature(originals) != _intersection_signature(simplified)
+        or _global_incidence_signature(originals) != _global_incidence_signature(simplified)
         or any(
             symmetric_hausdorff((original,), (candidate,)) > delta / 2.0 + 1e-12
             for original, candidate in zip(originals, simplified, strict=True)

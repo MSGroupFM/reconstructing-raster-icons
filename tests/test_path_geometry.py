@@ -12,6 +12,7 @@ from reconstructing_raster_icons.geometry import (  # noqa: E402
     HAUSDORFF_DISTANCE_EVALUATION_BUDGET,
     PathIntegrityError,
     PolylineSubpath,
+    _global_incidence_signature,
     _hausdorff_operation_estimate,
     _intersection_signature,
     evaluate_geometry_constraints,
@@ -74,6 +75,35 @@ class PathFlatteningTests(unittest.TestCase):
 
 
 class SimplificationTests(unittest.TestCase):
+    @staticmethod
+    def _three_path_junction(
+        scale: float, epsilon_ratio: float = 0.01
+    ) -> tuple[PolylineSubpath, ...]:
+        epsilon = epsilon_ratio * scale
+        center = (0.137 * scale, -0.223 * scale)
+
+        def shifted(point: tuple[float, float]) -> tuple[float, float]:
+            return center[0] + point[0], center[1] + point[1]
+
+        return (
+            PolylineSubpath(
+                (shifted((-scale, epsilon)), center, shifted((scale, -2.0 * epsilon))),
+                False,
+            ),
+            PolylineSubpath(
+                (shifted((epsilon, -scale)), center, shifted((-2.0 * epsilon, scale))),
+                False,
+            ),
+            PolylineSubpath(
+                (
+                    shifted((-scale, scale + epsilon)),
+                    center,
+                    shifted((scale, -scale + 2.0 * epsilon)),
+                ),
+                False,
+            ),
+        )
+
     def test_closed_paths_rotate_to_stable_lexicographic_start(self) -> None:
         source = PolylineSubpath(
             points=((3.0, 3.0), (1.0, 3.0), (1.0, 1.0), (3.0, 1.0), (3.0, 3.0)),
@@ -192,6 +222,8 @@ class SimplificationTests(unittest.TestCase):
             _intersection_signature((horizontal, endpoint)),
             ((0, 1, (("endpoint", 0, 0, 0, 0),)),),
         )
+        self.assertEqual(_global_incidence_signature((horizontal, overlap))[0][1][0][2], "overlap")
+        self.assertEqual(_global_incidence_signature((horizontal, endpoint))[0][1][0][2], "endpoint")
 
     def test_topology_signature_distinguishes_vertex_touch_from_crossing(self) -> None:
         horizontal = PolylineSubpath(((-1.0, 0.0), (1.0, 0.0)), False)
@@ -200,6 +232,61 @@ class SimplificationTests(unittest.TestCase):
 
         self.assertEqual(_intersection_signature((horizontal, touching))[0][2][0][0], "touch")
         self.assertEqual(_intersection_signature((horizontal, crossing))[0][2][0][0], "transverse")
+        self.assertEqual(_global_incidence_signature((horizontal, touching))[0][1][0][2], "touch")
+        self.assertEqual(_global_incidence_signature((horizontal, crossing))[0][1][0][2], "transverse")
+
+    def test_global_junction_incidence_survives_simplification_at_all_scales(self) -> None:
+        for scale in (1e-9, 1.0, 1e9):
+            with self.subTest(scale=scale):
+                junction = self._three_path_junction(scale)
+                separated = tuple(
+                    PolylineSubpath((path.points[0], path.points[-1]), False) for path in junction
+                )
+
+                self.assertEqual(_intersection_signature(junction), _intersection_signature(separated))
+                self.assertNotEqual(
+                    _global_incidence_signature(junction),
+                    _global_incidence_signature(separated),
+                )
+                self.assertEqual(simplify_subpaths(junction, delta=0.05 * scale), junction)
+
+    def test_global_incidence_does_not_merge_close_distinct_crossings(self) -> None:
+        for scale in (1e-9, 1.0, 1e9):
+            with self.subTest(scale=scale):
+                junction = self._three_path_junction(scale, epsilon_ratio=1e-12)
+                separated = tuple(
+                    PolylineSubpath((path.points[0], path.points[-1]), False) for path in junction
+                )
+
+                self.assertEqual(len(_global_incidence_signature(junction)), 1)
+                self.assertEqual(len(_global_incidence_signature(separated)), 3)
+
+    def test_valid_simplification_can_retain_a_shared_junction(self) -> None:
+        shared = (
+            PolylineSubpath(((-1.0, 0.0), (0.0, 0.0), (1.0, 0.0)), False),
+            PolylineSubpath(((0.0, -1.0), (0.0, 0.0), (0.0, 1.0)), False),
+            PolylineSubpath(((-1.0, -1.0), (0.0, 0.0), (1.0, 1.0)), False),
+        )
+
+        simplified = simplify_subpaths(shared, delta=0.2)
+
+        self.assertTrue(all(len(path.points) == 2 for path in simplified))
+        self.assertEqual(_global_incidence_signature(shared), _global_incidence_signature(simplified))
+
+    def test_global_incidence_preserves_cyclic_branch_arrangement(self) -> None:
+        horizontal = PolylineSubpath(((-1.0, 0.0), (1.0, 0.0)), False)
+        vertical = PolylineSubpath(((0.0, -1.0), (0.0, 1.0)), False)
+        rising = PolylineSubpath(((-1.0, -1.0), (1.0, 1.0)), False)
+        falling = PolylineSubpath(((-1.0, 1.0), (1.0, -1.0)), False)
+
+        self.assertEqual(
+            _intersection_signature((horizontal, vertical, rising)),
+            _intersection_signature((horizontal, vertical, falling)),
+        )
+        self.assertNotEqual(
+            _global_incidence_signature((horizontal, vertical, rising)),
+            _global_incidence_signature((horizontal, vertical, falling)),
+        )
 
     def test_open_loop_cannot_collapse_to_a_degenerate_candidate(self) -> None:
         source = PolylineSubpath(points=((0.0, 0.0), (1.0, 0.0), (0.0, 0.0)), closed=False)

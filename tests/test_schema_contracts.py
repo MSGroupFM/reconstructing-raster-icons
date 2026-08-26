@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -146,6 +147,111 @@ class SchemaContractTests(unittest.TestCase):
             with self.assertRaises(FrozenArtifactError):
                 atomic_write_json(destination, {"value": 2})
             self.assertEqual({"value": 1}, json.loads(destination.read_text(encoding="utf-8")))
+
+    def test_accepted_report_requires_raw_target_and_metric_consistency(self) -> None:
+        report = accepted_report_fixture()
+        for raw_name, rounded_name in (
+            ("silhouette_raw", "silhouette"),
+            ("contour_raw", "contour"),
+            ("layout_raw", "layout"),
+            ("topology_raw", "topology"),
+        ):
+            report["metrics"][raw_name] = 0  # type: ignore[index]
+            report["metrics"][rounded_name] = 0  # type: ignore[index]
+        report["metrics"]["composite_raw"] = 0  # type: ignore[index]
+        report["metrics"]["composite"] = 0  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["metrics"]["silhouette_raw"] = 98.125  # type: ignore[index]
+        report["metrics"]["silhouette"] = 98.12  # type: ignore[index]
+        report["metrics"]["composite_raw"] = 99.15625  # type: ignore[index]
+        report["metrics"]["composite"] = 99.16  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["status"] = "not_accepted"
+        report["target_met"] = False
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+    def test_map_contract_includes_canonical_reference_detail(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            for field in ("canonical_canvas", "applicable_gates", "ambiguities"):
+                self.assertIn(field, document)
+                missing = make_document()
+                del missing[field]
+                with self.assertRaises(jsonschema.ValidationError):
+                    validate_document(missing, schema_name)
+            component = document["components"][0]  # type: ignore[index]
+            for field in ("expected_hole_count", "applicable_gates"):
+                self.assertIn(field, component)
+            self.assertIsInstance(document["geometry_constraints"], dict)
+
+        document = draft_fixture()
+        constraints = document["geometry_constraints"]  # type: ignore[assignment]
+        constraints["endpoints"].append(  # type: ignore[index]
+            {"component_id": "mark", "start": [0, 0], "end": [1, 1], "tolerance": 0.01}
+        )
+        validate_document(document, "reconstruction-map-draft")
+        constraints["endpoints"][0]["unexpected"] = True  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(document, "reconstruction-map-draft")
+
+    def test_acceptance_report_includes_runtime_viewport_and_topology_nodes(self) -> None:
+        report = accepted_report_fixture()
+        for field in ("canonical_renderer", "topology_nodes"):
+            self.assertIn(field, report)
+            missing = accepted_report_fixture()
+            del missing[field]
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(missing, "acceptance-report")
+        for field in ("aspect_ratio", "grid", "canonical_canvas"):
+            self.assertIn(field, report["viewport"])  # type: ignore[index]
+
+    def test_gate_evidence_requires_text_or_artifact_hash(self) -> None:
+        report = accepted_report_fixture()
+        report["gates"][0]["evidence"] = {  # type: ignore[index]
+            "artifact_id": "safe-parse",
+            "sha256": "0" * 64,
+        }
+        validate_document(report, "acceptance-report")
+
+        review = semantic_review_fixture()
+        review["gates"][0]["evidence"] = {"basis": "review checklist"}  # type: ignore[index]
+        validate_document(review, "semantic-review")
+
+        review = semantic_review_fixture()
+        review["gates"][0]["evidence"] = {  # type: ignore[index]
+            "artifact_id": "review-checklist",
+            "sha256": "0" * 64,
+        }
+        validate_document(review, "semantic-review")
+
+        report = accepted_report_fixture()
+        report["gates"][0]["evidence"] = {}  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+    def test_atomic_write_rejects_destination_created_during_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "artifact.json"
+            original_link = __import__("os").link
+
+            def race_link(source: Path, target: Path) -> None:
+                Path(target).write_text('{"winner": true}\n', encoding="utf-8")
+                original_link(source, target)
+
+            with mock.patch("reconstructing_raster_icons.schema_io.os.link", side_effect=race_link):
+                with self.assertRaises(FrozenArtifactError):
+                    atomic_write_json(destination, {"value": 1})
+            self.assertEqual({"winner": True}, json.loads(destination.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":

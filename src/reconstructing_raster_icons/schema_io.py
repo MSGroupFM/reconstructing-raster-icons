@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
 from pathlib import Path
 import re
@@ -73,10 +74,69 @@ def load_schema(schema_name: str, schemas_dir: Path | None = None) -> dict[str, 
 def validate_document(document: object, schema_name: str) -> None:
     """Raise ``ValidationError`` when *document* violates its named contract."""
 
-    validator = validator_for(load_schema(schema_name))
+    validate_instance(document, load_schema(schema_name))
+
+
+def validate_instance(document: object, schema: object) -> None:
+    """Validate a document with the common schema, format, and contract checks."""
+
+    validator = validator_for(schema)
     errors = sorted(validator.iter_errors(document), key=lambda error: list(error.absolute_path))
     if errors:
         raise errors[0]
+    if isinstance(document, dict) and document.get("schema_kind") == "acceptance-report":
+        _validate_acceptance_coherence(document)
+
+
+def _decimal(value: object, field: str) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError) as error:
+        raise ValidationError(f"{field} must be a finite decimal number") from error
+
+
+def _validate_acceptance_coherence(report: dict[str, object]) -> None:
+    """Enforce acceptance-model relationships that JSON Schema cannot express."""
+
+    metrics = report["metrics"]
+    gates = report["gates"]
+    if not isinstance(metrics, dict) or not isinstance(gates, list):
+        raise ValidationError("acceptance report metrics and gates must be structured values")
+
+    pairs = (
+        ("silhouette_raw", "silhouette"),
+        ("contour_raw", "contour"),
+        ("layout_raw", "layout"),
+        ("topology_raw", "topology"),
+        ("composite_raw", "composite"),
+    )
+    raw_scores: dict[str, Decimal] = {}
+    for raw_name, rounded_name in pairs:
+        raw_score = _decimal(metrics[raw_name], raw_name)
+        rounded_score = _decimal(metrics[rounded_name], rounded_name)
+        if rounded_score.as_tuple().exponent < -2:
+            raise ValidationError(f"{rounded_name} must have at most two decimal places")
+        if raw_score.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) != rounded_score:
+            raise ValidationError(f"{rounded_name} must be {raw_name} rounded half-up to two decimals")
+        raw_scores[raw_name] = raw_score
+
+    expected_composite = (
+        Decimal("0.45") * raw_scores["silhouette_raw"]
+        + Decimal("0.30") * raw_scores["contour_raw"]
+        + Decimal("0.15") * raw_scores["layout_raw"]
+        + Decimal("0.10") * raw_scores["topology_raw"]
+    )
+    if raw_scores["composite_raw"] != expected_composite:
+        raise ValidationError("composite_raw must equal the specified weighted raw metric sum")
+
+    target_met = raw_scores["composite_raw"] >= _decimal(report["accuracy_target"], "accuracy_target")
+    if report["target_met"] != target_met:
+        raise ValidationError("target_met must equal composite_raw >= accuracy_target")
+
+    all_gates_pass = all(isinstance(gate, dict) and gate.get("state") == "pass" for gate in gates)
+    accepted = target_met and report["canonical_environment"] is True and all_gates_pass
+    if (report["status"] == "accepted") != accepted:
+        raise ValidationError("accepted status requires and is required by target, canonical environment, and passing gates")
 
 
 def validator_for(schema: object) -> Draft202012Validator:
@@ -102,11 +162,14 @@ def atomic_write_json(path: Path, document: object) -> None:
             output.write("\n")
             output.flush()
             os.fsync(output.fileno())
-        if destination.exists():
-            raise FrozenArtifactError(f"refusing to overwrite frozen artifact: {destination}")
-        os.replace(temporary, destination)
+        try:
+            os.link(temporary, destination)
+        except FileExistsError as error:
+            raise FrozenArtifactError(f"refusing to overwrite frozen artifact: {destination}") from error
         directory_descriptor = os.open(destination.parent, os.O_RDONLY)
         try:
+            os.fsync(directory_descriptor)
+            temporary.unlink()
             os.fsync(directory_descriptor)
         finally:
             os.close(directory_descriptor)

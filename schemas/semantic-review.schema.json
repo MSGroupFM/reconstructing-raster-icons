@@ -42,9 +42,9 @@
       }
     },
     "evidence": {
-      "type": "object", "additionalProperties": false,
-      "required": ["basis"],
-      "properties": {"basis": {"type": "string", "minLength": 1}, "artifact_id": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"basis": {"type": "string", "minLength": 1}, "artifact_id": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+      "anyOf": [{"required": ["basis"]}, {"required": ["artifact_id", "sha256"]}]
     }
   }
 }

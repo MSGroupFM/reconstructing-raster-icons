@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from jsonschema import ValidationError
 
 from reconstructing_raster_icons.constants import SCHEMA_KINDS
-from reconstructing_raster_icons.schema_io import load_schema, validator_for
+from reconstructing_raster_icons.schema_io import load_schema, validate_instance
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,7 +35,7 @@ def main() -> int:
             schema_kind = document.get("schema_kind")
             if schema_kind not in schemas:
                 raise ValidationError(f"unknown schema_kind: {schema_kind!r}")
-            validator_for(schemas[schema_kind]).validate(document)
+            validate_instance(document, schemas[schema_kind])
         except (OSError, json.JSONDecodeError, ValidationError) as error:
             print(json.dumps({"document": str(document_path), "valid": False, "error": str(error)}))
             return 2

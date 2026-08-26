@@ -47,6 +47,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": true,
+      "aspect_ratio": "1:1",
+      "exit_code": 5,
       "limit_state": "active",
       "metrics": {
         "composite": 100.000000,
@@ -55,7 +57,8 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "oracle_state": "semantic_review_pending"
+      "status": "incomplete",
+      "stop_reason": null
     },
     "impossible-target": {
       "gates": {
@@ -70,6 +73,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": false,
+      "aspect_ratio": "1:1",
+      "exit_code": 3,
       "limit_state": "stalled",
       "metrics": {
         "composite": 89.602511,
@@ -78,7 +83,8 @@
         "silhouette": 97.070312,
         "topology": 100.000000
       },
-      "oracle_state": "target_below"
+      "status": "not_accepted",
+      "stop_reason": "stalled"
     },
     "missing-component": {
       "gates": {
@@ -93,6 +99,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": false,
+      "aspect_ratio": "1:1",
+      "exit_code": 4,
       "limit_state": "active",
       "metrics": {
         "composite": 92.050281,
@@ -101,7 +109,8 @@
         "silhouette": 99.951196,
         "topology": 100.000000
       },
-      "oracle_state": "automatic_gate_failure"
+      "status": "not_accepted",
+      "stop_reason": null
     },
     "multicolor-rejection": {
       "gates": {
@@ -116,6 +125,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": true,
+      "aspect_ratio": "1:1",
+      "exit_code": 4,
       "limit_state": "active",
       "metrics": {
         "composite": 100.000000,
@@ -124,7 +135,8 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "oracle_state": "automatic_gate_failure"
+      "status": "not_accepted",
+      "stop_reason": null
     },
     "noisy-antialias": {
       "gates": {
@@ -139,6 +151,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": true,
+      "aspect_ratio": "1:1",
+      "exit_code": 5,
       "limit_state": "active",
       "metrics": {
         "composite": 100.000000,
@@ -147,7 +161,8 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "oracle_state": "semantic_review_pending"
+      "status": "incomplete",
+      "stop_reason": null
     },
     "occlusion-overlap": {
       "gates": {
@@ -162,6 +177,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": true,
+      "aspect_ratio": "1:1",
+      "exit_code": 5,
       "limit_state": "active",
       "metrics": {
         "composite": 100.000000,
@@ -170,7 +187,8 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "oracle_state": "semantic_review_pending"
+      "status": "incomplete",
+      "stop_reason": null
     },
     "open-stroke": {
       "gates": {
@@ -185,6 +203,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": false,
+      "aspect_ratio": "1:1",
+      "exit_code": 5,
       "limit_state": "active",
       "metrics": {
         "composite": 99.903053,
@@ -193,7 +213,8 @@
         "silhouette": 99.990759,
         "topology": 100.000000
       },
-      "oracle_state": "semantic_review_pending"
+      "status": "incomplete",
+      "stop_reason": null
     },
     "organic-curve": {
       "gates": {
@@ -208,6 +229,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": false,
+      "aspect_ratio": "1:1",
+      "exit_code": 3,
       "limit_state": "active",
       "metrics": {
         "composite": 79.229094,
@@ -216,7 +239,8 @@
         "silhouette": 94.088812,
         "topology": 100.000000
       },
-      "oracle_state": "target_below"
+      "status": "not_accepted",
+      "stop_reason": null
     },
     "ring-hole": {
       "gates": {
@@ -231,6 +255,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": true,
+      "aspect_ratio": "1:1",
+      "exit_code": 5,
       "limit_state": "active",
       "metrics": {
         "composite": 100.000000,
@@ -239,7 +265,8 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "oracle_state": "semantic_review_pending"
+      "status": "incomplete",
+      "stop_reason": null
     },
     "widescreen-16x9": {
       "gates": {
@@ -254,6 +281,8 @@
         "auto.viewport.geometry": "pass"
       },
       "identity": true,
+      "aspect_ratio": "16:9",
+      "exit_code": 5,
       "limit_state": "active",
       "metrics": {
         "composite": 100.000000,
@@ -262,7 +291,8 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "oracle_state": "semantic_review_pending"
+      "status": "incomplete",
+      "stop_reason": null
     }
   },
   "production_canonical_environment": false,

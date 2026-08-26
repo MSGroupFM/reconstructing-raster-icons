@@ -10,6 +10,7 @@ from io import BytesIO
 import json
 import math
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -43,7 +44,6 @@ from reconstructing_raster_icons.metrics import (
 )
 from reconstructing_raster_icons.pipeline import evaluate_candidate, prepare_reference
 from reconstructing_raster_icons.raster import canonical_size
-from reconstructing_raster_icons.geometry import evaluate_geometry_constraints
 from reconstructing_raster_icons.renderer import load_renderer_lock, resolve_canonical_node
 from reconstructing_raster_icons.reports import GateEvidence, GateResult, resolve_status
 from reconstructing_raster_icons.schema_io import validate_document
@@ -609,9 +609,8 @@ def _pixel_oracle_iteration(
     iteration: int,
     run_dir: Path,
     calls: list[tuple[str, tuple[int, int], str]],
-    prior: list[dict[str, object]],
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """Write a deterministic, explicitly non-authoritative pixel-oracle record."""
+    """Render SVG pixels and record independent metrics without pipeline decisions."""
     run_dir.mkdir(parents=True, exist_ok=True)
     draft = _read_json(case / "draft.json")
     components = draft["components"]
@@ -651,135 +650,9 @@ def _pixel_oracle_iteration(
     )
     metrics = {name: round(float(value), 6) for name, value in independent.items()}
 
-    weights = {
-        str(component["component_id"]): float(component["weight"])
-        for component in components
-    }
-    layout = component_layout_score(
-        reference_components,
-        visible,
-        weights=weights,
-        mandatory={
-            str(component["component_id"])
-            for component in components
-            if component["mandatory"] is True
-        },
-    )
-    topology = topology_score(
-        {
-            (str(component["component_id"]), int(component["expected_hole_count"]))
-            for component in components
-        },
-        draft["topology_facts"],
-        visible_masks=visible,
-        isolated_masks=isolated,
-        paint_order=tuple(component_ids),
-        uncertainty=uncertainty,
-    )
-    production_metrics = {
-        "silhouette": silhouette_score(reference, candidate, uncertainty),
-        "contour": contour_score(reference, candidate, uncertainty),
-        "layout": layout.score,
-        "topology": topology.score,
-    }
-    production_metrics["composite"] = composite_score(
-        MetricSet(
-            production_metrics["silhouette"],
-            production_metrics["contour"],
-            production_metrics["layout"],
-            production_metrics["topology"],
-        )
-    )
-
-    delta = max(1.0, math.floor(0.001 * math.hypot(*size) + 0.5))
-    geometry_ok = False
-    path_ok = False
-    candidate_geometry: dict[str, dict[str, object]] = {}
-    try:
-        candidate_geometry = pipeline_module._candidate_geometry(
-            document, components, size, delta
-        )
-        geometry = evaluate_geometry_constraints(
-            candidate_geometry,
-            draft["geometry_constraints"],
-            delta=delta,
-            canonical_canvas=(float(size[0]), float(size[1])),
-        )
-        geometry_ok = bool(geometry.passed)
-        path_ok = bool(
-            pipeline_module._candidate_path_integrity(
-                candidate_geometry, geometry.measurements, delta
-            )[0]
-        )
-    except (KeyError, TypeError, ValueError):
-        pass
-    viewport_ok = pipeline_module._candidate_viewport_matches(
-        document,
-        draft["viewport"],
-        size,
-        candidate_geometry,
-        components,
-    )
-    style_ok = pipeline_module._candidate_style_matches(
-        document,
-        components,
-        draft["geometry_constraints"],
-        candidate_geometry,
-        delta,
-        str(draft.get("foreground_color", "currentColor")),
-    )
-    integrity_ok = (
-        hashlib.sha256((case / "source.png").read_bytes()).hexdigest()
-        == draft["source_sha256"]
-        and len(hashlib.sha256(document.xml_bytes).hexdigest()) == 64
-        and all((case / "masks" / f"{component_id}.png").is_file() for component_id in component_ids)
-    )
-    gate_states = {
-        "auto.svg.safe_subset": "pass",
-        "auto.svg.render": "pass",
-        "auto.integrity.hashes": "pass" if integrity_ok else "fail",
-        "auto.components.present": "pass" if layout.gate_pass else "fail",
-        "auto.topology.facts": "pass" if topology.gate_pass else "fail",
-        "auto.viewport.geometry": "pass" if viewport_ok else "fail",
-        "auto.primitives.constraints": "pass" if geometry_ok else "fail",
-        "auto.paths.integrity": "pass" if path_ok else "fail",
-        "auto.style.monochrome": "pass" if style_ok else "fail",
-    }
-    if tuple(gate_states) != AUTOMATIC_GATE_IDS:
-        raise AssertionError("pixel-oracle automatic gate order drifted")
-
-    score_history = [float(item["metrics"]["composite"]) for item in prior] + [
-        metrics["composite"]
-    ]
-    improvements: list[bool] = []
-    all_records = prior + [{"automatic_gates": gate_states}]
-    for previous, current in zip(all_records, all_records[1:]):
-        prior_states = previous["automatic_gates"]
-        current_states = current["automatic_gates"]
-        improvements.append(
-            any(
-                prior_states[gate_id] != "pass" and current_states[gate_id] == "pass"
-                for gate_id in AUTOMATIC_GATE_IDS
-            )
-        )
-    stalled = pipeline_module.is_stalled(score_history, improvements)
-    refinement_limit = int(draft["refinement_limit"])
-    limit_state = "stalled" if stalled else "reached" if iteration == refinement_limit else "active"
-    stop_reason = "stalled" if stalled else "iteration_limit" if iteration == refinement_limit else None
-    if any(state == "fail" for state in gate_states.values()):
-        oracle_state = "automatic_gate_failure"
-    elif metrics["composite"] < float(draft["accuracy_target"]):
-        oracle_state = "target_below"
-    else:
-        oracle_state = "semantic_review_pending"
-
     suffix = f"i{iteration:02d}"
-    overlay = pipeline_module._comparison_png(reference, candidate, diff=False)
-    difference = pipeline_module._comparison_png(reference, candidate, diff=True)
     png_artifacts = {
         f"preview-{suffix}.png": rendered.png_bytes,
-        f"overlay-{suffix}.png": overlay,
-        f"diff-{suffix}.png": difference,
         **{
             f"diagnostic-{name}-{suffix}.png": payload
             for name, payload in diagnostic_capture["png_bytes"].items()
@@ -795,25 +668,7 @@ def _pixel_oracle_iteration(
         "production_canonical_environment": False,
         "case": case.name,
         "iteration": iteration,
-        "limit_state": limit_state,
-        "stop_reason": stop_reason,
-        "oracle_state": oracle_state,
-        "accuracy_target": draft["accuracy_target"],
-        "target_met": metrics["composite"] >= float(draft["accuracy_target"]),
         "metrics": metrics,
-        "automatic_gates": gate_states,
-        "semantic_gates": {
-            gate_id: "not_evaluated" for gate_id in SEMANTIC_GATE_IDS
-        },
-        "viewport": {
-            **copy.deepcopy(draft["viewport"]),
-            "canonical_canvas": copy.deepcopy(draft["canonical_canvas"]),
-        },
-        "uncertainty_pixels": int(np.count_nonzero(uncertainty)),
-        "topology_facts": [
-            {"relation": relation, "subject": subject, "object": object_id}
-            for relation, subject, object_id in sorted(topology.observed_edge_facts)
-        ],
         "renderer_contract": {
             "authority": "pixel_oracle",
             "runtime_version": "22.14.0",
@@ -841,7 +696,6 @@ def _pixel_oracle_iteration(
         "reference_components": reference_components,
         "visible": visible,
         "isolated": isolated,
-        "production_metrics": production_metrics,
         "diagnostic_hashes": diagnostic_capture["hashes"],
     }
     return record, measurements
@@ -858,11 +712,118 @@ def _run_pixel_oracle_case(
     measurements: list[dict[str, object]] = []
     for iteration in range(iterations):
         record, measured = _pixel_oracle_iteration(
-            case, candidate_path, iteration, run_dir, calls, records
+            case, candidate_path, iteration, run_dir, calls
         )
         records.append(record)
         measurements.append(measured)
     return records, measurements
+
+
+CANONICAL_CASE_NAMES = (
+    "analytic-fill",
+    "impossible-target",
+    "missing-component",
+    "multicolor-rejection",
+    "noisy-antialias",
+    "occlusion-overlap",
+    "open-stroke",
+    "organic-curve",
+    "ring-hole",
+    "widescreen-16x9",
+)
+CANONICAL_DARWIN_SKIP = "production canonical isolation unavailable"
+
+
+def _canonical_platform_skip_reason(
+    *, system: str | None = None, architecture: str | None = None
+) -> str | None:
+    selected_system = sys.platform if system is None else system
+    selected_architecture = platform.machine().lower() if architecture is None else architecture.lower()
+    if selected_system == "linux" and selected_architecture == "x86_64":
+        return None
+    if selected_system == "darwin":
+        return CANONICAL_DARWIN_SKIP
+    raise AssertionError(
+        f"canonical-platform conformance has no supported contract for "
+        f"{selected_system}-{selected_architecture}"
+    )
+
+
+def _run_canonical_pipeline_case(
+    case: Path,
+    iterations: int,
+    root: Path,
+) -> dict[str, object]:
+    """Run the public production pipeline twice against one frozen reference map."""
+    reference_output = root / "reference"
+    with mock.patch.object(pipeline_module, "_utc_now", return_value=FIXED_TIME):
+        prepare_summary = pipeline_module.prepare_reference(
+            case / "source.png", case / "draft.json", reference_output
+        )
+        map_path = reference_output / "reconstruction-map-r01.json"
+        runs: dict[str, dict[str, object]] = {}
+        for run_name in ("run-a", "run-b"):
+            run_dir = root / run_name
+            summaries: list[dict[str, object]] = []
+            evaluations: list[dict[str, object]] = []
+            for iteration in range(iterations):
+                summaries.append(
+                    pipeline_module.evaluate_candidate(
+                        map_path,
+                        case / "candidate.svg",
+                        iteration,
+                        run_dir,
+                    )
+                )
+                evaluations.append(_read_json(run_dir / f"evaluation-i{iteration:02d}.json"))
+            runs[run_name] = {
+                "directory": run_dir,
+                "summaries": summaries,
+                "evaluations": evaluations,
+            }
+    return {
+        "prepare_summary": prepare_summary,
+        "reference_directory": reference_output,
+        "map_path": map_path,
+        "runs": runs,
+    }
+
+
+def _canonical_report_artifact_paths(
+    case: Path,
+    reference_directory: Path,
+    run_directory: Path,
+    report: dict[str, object],
+) -> dict[str, Path]:
+    """Resolve every report artifact ID to the public pipeline file it binds."""
+    iteration = int(report["iteration"])
+    suffix = f"i{iteration:02d}"
+    map_path = reference_directory / "reconstruction-map-r01.json"
+    frozen_map = _read_json(map_path)
+    revision = f"r{int(frozen_map['map_revision']):02d}"
+    paths = {
+        f"source-{revision}": case / "source.png",
+        f"reconstruction-map-{revision}": map_path,
+        f"map-snapshot-{suffix}": run_directory / f"map-snapshot-{suffix}.json",
+        str(frozen_map["reference_mask"]["logical_id"]): (
+            reference_directory / f"reference-{revision}" / "reference-mask.png"
+        ),
+        str(frozen_map["uncertainty_mask"]["logical_id"]): (
+            reference_directory / f"reference-{revision}" / "uncertainty-mask.png"
+        ),
+        f"candidate-{suffix}": run_directory / f"candidate-{suffix}.svg",
+        f"preview-{suffix}": run_directory / f"preview-{suffix}.png",
+        f"overlay-{suffix}": run_directory / f"overlay-{suffix}.png",
+        f"diff-{suffix}": run_directory / f"diff-{suffix}.png",
+        f"diagnostics-{suffix}": run_directory / f"diagnostics-{suffix}.json",
+    }
+    for component in frozen_map["components"]:
+        component_id = str(component["component_id"])
+        logical_id = str(component["reference_mask"]["logical_id"])
+        paths[logical_id] = (
+            reference_directory / f"reference-{revision}" / f"component-{component_id}.png"
+        )
+    return paths
 
 
 class FixtureGeneratorTests(unittest.TestCase):
@@ -968,6 +929,47 @@ class IndependentMetricGoldenTests(unittest.TestCase):
 
 
 class PipelineCorpusTests(unittest.TestCase):
+    def test_pixel_oracle_record_excludes_normative_pipeline_decisions(self) -> None:
+        case = CONFORMANCE / "analytic-fill"
+        calls: list[tuple[str, tuple[int, int], str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            records, _ = _run_pixel_oracle_case(
+                case,
+                case / "candidate.svg",
+                1,
+                Path(directory),
+                calls,
+            )
+
+        forbidden = {
+            "accuracy_target",
+            "automatic_gates",
+            "limit_state",
+            "oracle_state",
+            "semantic_gates",
+            "status",
+            "stop_reason",
+            "target_met",
+        }
+        self.assertTrue(
+            forbidden.isdisjoint(records[0]),
+            f"pixel oracle reconstructed normative pipeline fields: {sorted(forbidden & records[0].keys())}",
+        )
+
+    def test_canonical_suite_dispatches_to_the_public_pipeline_and_propagates_mutation(self) -> None:
+        dispatch = globals().get("_run_canonical_pipeline_case")
+        self.assertIsNotNone(dispatch, "canonical-platform pipeline dispatch is missing")
+        case = CONFORMANCE / "analytic-fill"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(
+                pipeline_module,
+                "evaluate_candidate",
+                side_effect=RuntimeError("mutated evaluate_candidate"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "mutated evaluate_candidate"):
+                    dispatch(case, 1, root)
+
     def test_repository_declares_and_selects_the_platform_pinned_node(self) -> None:
         package = _read_json(REPOSITORY / "package.json")
         package_lock = _read_json(REPOSITORY / "package-lock.json")
@@ -1115,6 +1117,23 @@ class PipelineCorpusTests(unittest.TestCase):
                 gates = expected["gates"]
                 self.assertEqual(len(gates), len(AUTOMATIC_GATE_IDS))
                 self.assertEqual(set(gates), expected_ids)
+                self.assertIn(expected["status"], {status.value for status in Status})
+                self.assertIn("stop_reason", expected)
+
+    def test_canonical_suite_lists_all_cases_and_is_mandatory_on_linux_x64(self) -> None:
+        manifest = _read_json(CONFORMANCE / "manifest.json")
+        manifest_names = tuple(sorted(str(item["name"]) for item in manifest["pipeline_cases"]))
+        self.assertEqual(CANONICAL_CASE_NAMES, manifest_names)
+        self.assertIsNone(
+            _canonical_platform_skip_reason(system="linux", architecture="x86_64")
+        )
+        self.assertEqual(
+            _canonical_platform_skip_reason(system="darwin", architecture="arm64"),
+            CANONICAL_DARWIN_SKIP,
+        )
+        self.assertTrue(
+            issubclass(CanonicalPlatformConformanceTests, unittest.TestCase)
+        )
 
     def test_every_pixel_oracle_record_is_repeatable_and_matches_independent_goldens(self) -> None:
         manifest = _read_json(CONFORMANCE / "manifest.json")
@@ -1170,50 +1189,126 @@ class PipelineCorpusTests(unittest.TestCase):
                 for metric_name, expected_value in expected["metrics"].items():
                     self.assertEqual(records["run-a"][-1]["metrics"][metric_name], expected_value)
                 final_record = records["run-a"][-1]
-                report_metrics = final_record["metrics"]
-                production_metrics = measurements["run-a"][-1]["production_metrics"]
+                independent_metrics = final_record["metrics"]
                 for metric_name, expected_value in expected["metrics"].items():
                     if expected.get("identity"):
-                        self.assertEqual(report_metrics[metric_name], 100.0)
-                        self.assertEqual(production_metrics[metric_name], 100.0)
+                        self.assertEqual(independent_metrics[metric_name], 100.0)
                     self.assertLessEqual(
-                        abs(float(production_metrics[metric_name]) - expected_value), tolerance
+                        abs(float(independent_metrics[metric_name]) - expected_value), tolerance
                     )
-                self.assertEqual(final_record["oracle_state"], expected["oracle_state"])
-                self.assertEqual(final_record["limit_state"], expected["limit_state"])
-                states = final_record["automatic_gates"]
-                self.assertEqual(tuple(states), AUTOMATIC_GATE_IDS)
-                self.assertEqual(states, expected["gates"])
-                self.assertEqual(final_record["semantic_gates"], golden["semantic_gate_defaults"])
 
                 if name == "missing-component":
-                    self.assertGreater(float(report_metrics["silhouette"]), 99.9)
-                    self.assertEqual(states["auto.components.present"], "fail")
+                    self.assertGreater(float(independent_metrics["silhouette"]), 99.9)
                 elif name == "widescreen-16x9":
-                    self.assertEqual(final_record["viewport"]["aspect_ratio"], "16:9")
-                    self.assertEqual(
-                        final_record["viewport"]["canonical_canvas"],
-                        {"width": 64, "height": 36, "raster_width": 1024, "raster_height": 576},
-                    )
                     with Image.open(root / "run-a" / "preview-i00.png") as preview:
                         self.assertEqual(preview.size, (1024, 576))
                 elif name == "noisy-antialias":
-                    self.assertGreater(final_record["uncertainty_pixels"], 0)
-                    self.assertEqual(report_metrics["silhouette"], 100.0)
-                    self.assertEqual(report_metrics["contour"], 100.0)
-                elif name == "impossible-target":
-                    self.assertEqual(final_record["limit_state"], "stalled")
-                    self.assertEqual(final_record["stop_reason"], "stalled")
-                elif name == "multicolor-rejection":
-                    self.assertEqual(states["auto.style.monochrome"], "fail")
-                elif name == "ring-hole":
-                    self.assertEqual(states["auto.topology.facts"], "pass")
-                    self.assertIn(
-                        {"relation": "contains", "subject": "ring", "object": "inner"},
-                        final_record["topology_facts"],
+                    uncertainty = measurements["run-a"][-1]["uncertainty"]
+                    self.assertGreater(int(np.count_nonzero(uncertainty)), 0)
+                    self.assertEqual(independent_metrics["silhouette"], 100.0)
+                    self.assertEqual(independent_metrics["contour"], 100.0)
+
+
+class CanonicalPlatformConformanceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        reason = _canonical_platform_skip_reason()
+        if reason is not None:
+            raise unittest.SkipTest(reason)
+
+    def test_public_pipeline_matches_all_normative_goldens_twice(self) -> None:
+        manifest = _read_json(CONFORMANCE / "manifest.json")
+        cases = {str(item["name"]): item for item in manifest["pipeline_cases"]}
+        self.assertEqual(tuple(sorted(cases)), CANONICAL_CASE_NAMES)
+        golden = _golden()
+        tolerance = float(golden["tolerance"])
+
+        for name in CANONICAL_CASE_NAMES:
+            case_record = cases[name]
+            case = FIXTURES / str(case_record["path"])
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                result = _run_canonical_pipeline_case(
+                    case,
+                    int(case_record["iterations"]),
+                    Path(directory),
+                )
+                runs = result["runs"]
+                for iteration in range(int(case_record["iterations"])):
+                    first_evaluation = runs["run-a"]["evaluations"][iteration]
+                    second_evaluation = runs["run-b"]["evaluations"][iteration]
+                    first_report = first_evaluation["report"]
+                    second_report = second_evaluation["report"]
+                    self.assertEqual(
+                        _normalized_bytes(first_report),
+                        _normalized_bytes(second_report),
                     )
-                elif name == "occlusion-overlap":
-                    self.assertEqual(states["auto.topology.facts"], "pass")
+                    for image_name in ("preview", "overlay", "diff"):
+                        filename = f"{image_name}-i{iteration:02d}.png"
+                        self.assertEqual(
+                            _sha256(runs["run-a"]["directory"] / filename),
+                            _sha256(runs["run-b"]["directory"] / filename),
+                        )
+                    for run_name in ("run-a", "run-b"):
+                        report = runs[run_name]["evaluations"][iteration]["report"]
+                        run_directory = runs[run_name]["directory"]
+                        declared_artifacts = report["artifacts"]
+                        declared_ids = [str(item["logical_id"]) for item in declared_artifacts]
+                        self.assertEqual(len(declared_ids), len(set(declared_ids)))
+                        artifact_paths = _canonical_report_artifact_paths(
+                            case,
+                            result["reference_directory"],
+                            run_directory,
+                            report,
+                        )
+                        self.assertEqual(set(declared_ids), set(artifact_paths))
+                        declared_hashes = {
+                            str(item["logical_id"]): str(item["sha256"])
+                            for item in declared_artifacts
+                        }
+                        for logical_id, artifact_path in artifact_paths.items():
+                            self.assertTrue(artifact_path.is_file(), logical_id)
+                            self.assertEqual(_sha256(artifact_path), declared_hashes[logical_id])
+
+                expected = golden["pipeline_cases"][name]
+                final_iteration = int(case_record["iterations"]) - 1
+                final_report = runs["run-a"]["evaluations"][final_iteration]["report"]
+                final_summary = runs["run-a"]["summaries"][final_iteration]
+                self.assertTrue(final_report["canonical_environment"])
+                self.assertEqual(final_report["status"], expected["status"])
+                self.assertEqual(final_summary["status"], expected["status"])
+                self.assertEqual(final_summary["exit_code"], expected["exit_code"])
+                self.assertEqual(final_report["limit_state"], expected["limit_state"])
+                self.assertEqual(final_report["stop_reason"], expected["stop_reason"])
+                self.assertEqual(
+                    final_report["viewport"]["aspect_ratio"], expected["aspect_ratio"]
+                )
+                for metric_name, expected_value in expected["metrics"].items():
+                    actual = float(final_report["metrics"][f"{metric_name}_raw"])
+                    if expected.get("identity"):
+                        self.assertEqual(actual, 100.0)
+                    self.assertLessEqual(abs(actual - float(expected_value)), tolerance)
+                automatic_gates = [
+                    item for item in final_report["gates"] if item["kind"] == "automatic"
+                ]
+                self.assertEqual(
+                    [item["gate_id"] for item in automatic_gates],
+                    list(AUTOMATIC_GATE_IDS),
+                )
+                self.assertEqual(
+                    {item["gate_id"]: item["state"] for item in automatic_gates},
+                    expected["gates"],
+                )
+                semantic_gates = [
+                    item for item in final_report["gates"] if item["kind"] == "semantic"
+                ]
+                self.assertEqual(
+                    [item["gate_id"] for item in semantic_gates],
+                    list(SEMANTIC_GATE_IDS),
+                )
+                self.assertEqual(
+                    {item["gate_id"]: item["state"] for item in semantic_gates},
+                    golden["semantic_gate_defaults"],
+                )
 
 
 class ContractAndStatusCorpusTests(unittest.TestCase):

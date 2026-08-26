@@ -10,10 +10,14 @@ from PIL import Image
 
 from reconstructing_raster_icons.errors import InvalidInputError
 from reconstructing_raster_icons.raster import (
+    NormalizationDecision,
+    apply_frozen_placement,
     build_uncertainty,
     canonical_size,
     estimate_normalization,
     load_raster,
+    normalize_with_decision,
+    place_raster,
 )
 
 
@@ -85,6 +89,63 @@ class RasterNormalizationTests(unittest.TestCase):
         coverage = np.full((64, 64), 0.5, dtype=np.float64)
         with self.assertRaises(InvalidInputError):
             build_uncertainty(coverage, delta=1)
+
+    def test_contain_placement_is_centered_and_reusable_without_deformation(self) -> None:
+        source = Image.new("RGBA", (1, 1), (20, 30, 40, 255))
+        placement = place_raster(source, Fraction(3, 2))
+
+        self.assertEqual(placement.canvas_size, (1024, 683))
+        self.assertEqual(placement.source_size, (1, 1))
+        self.assertEqual(placement.resampled_size, (683, 683))
+        self.assertEqual((placement.offset_x, placement.offset_y), (170, 0))
+        self.assertEqual(placement.scale_x, placement.scale_y)
+        self.assertEqual(placement.image.getpixel((0, 0))[3], 0)
+        self.assertEqual(placement.image.getpixel((170, 0))[3], 255)
+        self.assertEqual(placement.image.getpixel((852, 682))[3], 255)
+        self.assertEqual(placement.image.getpixel((853, 682))[3], 0)
+        self.assertEqual(apply_frozen_placement(source, placement).tobytes(), placement.image.tobytes())
+
+    def test_contain_placement_supports_canonical_landscape_and_portrait_ratios(self) -> None:
+        landscape = place_raster(Image.new("RGBA", (16, 9), "black"), Fraction(16, 9))
+        portrait = place_raster(Image.new("RGBA", (9, 16), "black"), Fraction(9, 16))
+        square = place_raster(Image.new("RGBA", (1, 1), "black"), Fraction(1, 1))
+
+        self.assertEqual(landscape.canvas_size, (1024, 576))
+        self.assertEqual(landscape.offset_x, 0)
+        self.assertEqual(landscape.offset_y, 0)
+        self.assertEqual(portrait.canvas_size, (576, 1024))
+        self.assertEqual(portrait.offset_x, 0)
+        self.assertEqual(portrait.offset_y, 0)
+        self.assertEqual(square.canvas_size, (1024, 1024))
+        self.assertEqual(square.scale_x, square.scale_y)
+
+    def test_cover_and_stretch_require_confirmation_and_have_fixed_semantics(self) -> None:
+        source = Image.new("RGBA", (1, 1), "black")
+        with self.assertRaises(InvalidInputError):
+            place_raster(source, Fraction(3, 2), fit_mode="cover")
+        with self.assertRaises(InvalidInputError):
+            place_raster(source, Fraction(3, 2), fit_mode="stretch")
+
+        cover = place_raster(source, Fraction(3, 2), fit_mode="cover", confirmed=True)
+        stretch = place_raster(source, Fraction(3, 2), fit_mode="stretch", confirmed=True)
+        self.assertEqual(cover.resampled_size, (1024, 1024))
+        self.assertEqual((cover.offset_x, cover.offset_y), (0, -170))
+        self.assertEqual(stretch.resampled_size, (1024, 683))
+        self.assertNotEqual(stretch.scale_x, stretch.scale_y)
+
+    def test_explicit_normalization_decision_handles_ambiguous_transparent_black(self) -> None:
+        image = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        image.putpixel((4, 4), (0, 0, 0, 255))
+        with self.assertRaises(InvalidInputError):
+            estimate_normalization(image)
+
+        normalized = normalize_with_decision(
+            image,
+            NormalizationDecision(background_luminance=1.0, foreground_luminance=0.0, polarity="dark"),
+        )
+        self.assertTrue(normalized.mask[4, 4])
+        self.assertFalse(normalized.mask[0, 0])
+        self.assertEqual(normalized.coverage[0, 0], 0.0)
 
 
 if __name__ == "__main__":

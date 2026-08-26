@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -82,7 +83,24 @@ class SkillValidatorTests(unittest.TestCase):
         self.assertIn("ERROR frontmatter.scalar: SKILL.md:3: mapping syntax is not allowed\n", output)
 
     def test_non_string_frontmatter_scalars_are_rejected(self) -> None:
-        cases = ("true", "null", "42", "[]", "{}")
+        cases = (
+            "true",
+            "null",
+            "42",
+            "[]",
+            "{}",
+            "1.",
+            "01",
+            "012",
+            "1:20",
+            ".inf",
+            ".nan",
+            "2026-08-26",
+            "2026-08-26T12:34:56Z",
+            "0x10",
+            "0b10",
+            "1.0e+3",
+        )
         for key in ("name", "description"):
             for replacement in cases:
                 with self.subTest(key=key, replacement=replacement):
@@ -94,7 +112,47 @@ class SkillValidatorTests(unittest.TestCase):
 
                     result, output = self.mutate_skill(replace_value)
                     self.assertEqual(result.returncode, 1)
-                    self.assertIn("ERROR frontmatter.scalar:", output)
+                    line_number = 2 if key == "name" else 3
+                    self.assertIn(
+                        f"ERROR frontmatter.scalar: SKILL.md:{line_number}: expected string scalar\n",
+                        output,
+                    )
+
+    def test_quoted_yaml_scalar_lookalikes_remain_valid_strings(self) -> None:
+        for replacement in ('"1:20"', '"description: # text"'):
+            with self.subTest(replacement=replacement):
+                def replace_description(root: Path) -> None:
+                    path = root / "SKILL.md"
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                    lines[1] = 'name: "reconstructing-raster-icons"'
+                    lines[2] = f"description: {replacement}"
+                    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                result, output = self.mutate_skill(replace_description)
+                self.assertEqual(result.returncode, 0, output)
+                self.assertEqual(result.stdout, "Skill is valid.\n")
+
+    def test_missing_pyyaml_has_stable_dependency_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="validate-skill-test-") as temporary:
+            root = Path(temporary)
+            self.extract_skill(root)
+            environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
+            result = subprocess.run(
+                [sys.executable, "-S", str(VALIDATOR), "--path", str(root)],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "ERROR dependency.missing: PyYAML is required\n",
+        )
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_duplicate_keys_and_unsafe_yaml_constructs_remain_rejected(self) -> None:
         attacks = ("&anchor value", "*anchor", "!unsafe value")

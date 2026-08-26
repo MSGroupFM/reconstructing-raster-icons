@@ -11,6 +11,11 @@ import re
 import sys
 from urllib.parse import unquote, urlsplit
 
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
+
 
 EXPECTED_NAME = "reconstructing-raster-icons"
 ALLOWED_FRONTMATTER_KEYS = frozenset({"name", "description"})
@@ -33,19 +38,6 @@ PLACEHOLDER_RE = re.compile(
 STANDALONE_SKILL_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_-])\$reconstructing-raster-icons(?![A-Za-z0-9_-])"
 )
-YAML_NON_STRING_RE = re.compile(
-    r"(?:~|null|true|false|yes|no|on|off|[-+]?(?:"
-    r"(?:0|[1-9][0-9_]*)|(?:[0-9][0-9_]*)?\.[0-9_]+|"
-    r"[0-9][0-9_]*(?:\.[0-9_]*)?[eE][-+]?[0-9]+|"
-    r"0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|\.inf|\.nan))",
-    re.IGNORECASE,
-)
-YAML_TIMESTAMP_RE = re.compile(
-    r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt]|[ \t]+)[^ \t]+|"
-    r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}"
-)
-
-
 @dataclass(frozen=True, order=True)
 class Issue:
     code: str
@@ -64,54 +56,6 @@ def _read_text(path: Path, relative: str, issues: list[Issue]) -> str | None:
     return None
 
 
-def _plain_scalar(raw: str, *, relative: str, line_number: int, issues: list[Issue]) -> str | None:
-    value = raw.strip()
-    if not value:
-        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: empty value"))
-        return None
-    if value.startswith('"'):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: invalid quoted value"))
-            return None
-        if not isinstance(decoded, str):
-            issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: expected string"))
-            return None
-        return decoded
-    if value.startswith("'"):
-        if len(value) < 2 or not value.endswith("'"):
-            issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: invalid quoted value"))
-            return None
-        inner = value[1:-1]
-        decoded: list[str] = []
-        index = 0
-        while index < len(inner):
-            if inner[index] != "'":
-                decoded.append(inner[index])
-                index += 1
-            elif index + 1 < len(inner) and inner[index + 1] == "'":
-                decoded.append("'")
-                index += 2
-            else:
-                issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: invalid quoted value"))
-                return None
-        return "".join(decoded)
-    if re.search(r":[ \t]|:$", value):
-        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: mapping syntax is not allowed"))
-        return None
-    if re.search(r"(?:^|[ \t])#", value):
-        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: comments are not allowed"))
-        return None
-    if value[0] in "[{&*!>|@`" or value.endswith(":"):
-        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: complex YAML is not allowed"))
-        return None
-    if YAML_NON_STRING_RE.fullmatch(value) or YAML_TIMESTAMP_RE.fullmatch(value):
-        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: expected string scalar"))
-        return None
-    return value
-
-
 def _validate_frontmatter(text: str, issues: list[Issue]) -> None:
     relative = "SKILL.md"
     lines = text.splitlines()
@@ -124,23 +68,83 @@ def _validate_frontmatter(text: str, issues: list[Issue]) -> None:
         issues.append(Issue("frontmatter.missing", f"{relative}: expected closing ---"))
         return
 
+    source = "\n".join(lines[1:closing_index])
+    try:
+        events = list(yaml.parse(source, Loader=yaml.SafeLoader))
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        line_number = (mark.line + 2) if mark is not None else 2
+        if getattr(error, "problem", None) == "mapping values are not allowed here":
+            issues.append(
+                Issue(
+                    "frontmatter.scalar",
+                    f"{relative}:{line_number}: mapping syntax is not allowed",
+                )
+            )
+        else:
+            issues.append(Issue("frontmatter.syntax", f"{relative}:{line_number}: invalid YAML"))
+        return
+
+    anchored_event = next(
+        (
+            event
+            for event in events
+            if isinstance(event, yaml.events.AliasEvent) or getattr(event, "anchor", None)
+        ),
+        None,
+    )
+    if anchored_event is not None:
+        line_number = anchored_event.start_mark.line + 2
+        issues.append(
+            Issue(
+                "frontmatter.scalar",
+                f"{relative}:{line_number}: anchors and aliases are not allowed",
+            )
+        )
+        return
+
+    try:
+        node = yaml.compose(source, Loader=yaml.SafeLoader)
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        line_number = (mark.line + 2) if mark is not None else 2
+        issues.append(Issue("frontmatter.syntax", f"{relative}:{line_number}: invalid YAML"))
+        return
+
+    if not isinstance(node, yaml.nodes.MappingNode) or node.tag != yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG:
+        issues.append(Issue("frontmatter.syntax", f"{relative}: expected mapping"))
+        return
+
     values: dict[str, str] = {}
     seen_keys: set[str] = set()
-    for index, line in enumerate(lines[1:closing_index], start=2):
-        if not line.strip():
+    for key_node, value_node in node.value:
+        if (
+            not isinstance(key_node, yaml.nodes.ScalarNode)
+            or key_node.tag != yaml.resolver.BaseResolver.DEFAULT_SCALAR_TAG
+        ):
+            line_number = key_node.start_mark.line + 2
+            issues.append(Issue("frontmatter.syntax", f"{relative}:{line_number}: expected string key"))
             continue
-        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_-]*):[ \t]*(.*)", line)
-        if not match:
-            issues.append(Issue("frontmatter.syntax", f"{relative}:{index}"))
-            continue
-        key, raw_value = match.groups()
+
+        key = key_node.value
         if key in seen_keys:
             issues.append(Issue("frontmatter.duplicate_key", f"{relative}: {key}"))
             continue
         seen_keys.add(key)
-        parsed = _plain_scalar(raw_value, relative=relative, line_number=index, issues=issues)
-        if parsed is not None:
-            values[key] = parsed
+
+        line_number = value_node.start_mark.line + 2
+        if (
+            not isinstance(value_node, yaml.nodes.ScalarNode)
+            or value_node.tag != yaml.resolver.BaseResolver.DEFAULT_SCALAR_TAG
+        ):
+            issues.append(
+                Issue(
+                    "frontmatter.scalar",
+                    f"{relative}:{line_number}: expected string scalar",
+                )
+            )
+            continue
+        values[key] = value_node.value
 
     for key in sorted(seen_keys - ALLOWED_FRONTMATTER_KEYS):
         issues.append(Issue("frontmatter.unknown_key", f"{relative}: {key}"))
@@ -280,6 +284,8 @@ def validate_skill(root: Path) -> list[Issue]:
     issues: list[Issue] = []
     if not root.is_dir():
         return [Issue("path.invalid", "skill root is not a directory")]
+    if yaml is None:
+        return [Issue("dependency.missing", "PyYAML is required")]
 
     public_texts: dict[Path, str] = {}
     skill_path = root / "SKILL.md"

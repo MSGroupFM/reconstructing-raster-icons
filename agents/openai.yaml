@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reconstruct Raster Icons"
+  short_description: "Rebuild raster icons as verified SVG"
+  default_prompt: "Use $reconstructing-raster-icons to reconstruct this monochrome raster icon as an editable SVG."

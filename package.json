@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "engines": {
+    "node": "22.14.0"
+  },
+  "dependencies": {
+    "@resvg/resvg-wasm": "2.6.2"
+  }
+}

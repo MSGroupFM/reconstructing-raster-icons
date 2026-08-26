@@ -7,10 +7,11 @@ and this project uses semantic versioning.
 
 - No unreleased changes recorded.
 
-## 0.1.0 — prepared 2026-08-26
+## 0.1.0 — local release candidate prepared 2026-08-26
 
-This version is prepared locally and has not been tagged, pushed, or
-published.
+This release candidate is prepared locally and has not been tagged, pushed,
+or published. Publication readiness is blocked pending the mandatory live
+Ubuntu x64 canonical zero-skip CI run.
 
 ### Added
 
@@ -38,6 +39,10 @@ published.
 
 ### Verification boundary
 
-- Live Linux-x64 canonical execution and online `npm ci` remain explicitly
-  unverified until a real networked Linux CI run completes. The committed CI
-  definition does not itself count as execution evidence.
+- A clean Python `3.11.16` environment installed `requirements-lock.txt` with
+  `--require-hashes`, and online host `npm ci --no-audit --no-fund` completed
+  with the locked Node `22.14.0` and WASM artifacts verified.
+- Live Ubuntu Linux-x64 canonical execution remains explicitly **UNVERIFIED**
+  and mandatory with zero skips before publication readiness. Its CI job must
+  run online `npm ci` independently; a host installation and the committed CI
+  definition do not count as Linux execution evidence.

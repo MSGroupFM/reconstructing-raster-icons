@@ -29,8 +29,9 @@ The precise limits and accepted SVG subset are documented in
 ## Supported line
 
 Security fixes are prepared for the `0.1.x` line. Version `0.1.0` is currently
-release-ready source, not a claim that a public release or support service
-exists.
+a local release candidate. Publication readiness remains blocked pending the
+mandatory live Ubuntu x64 canonical zero-skip CI run. This is not a claim that
+a public release or support service exists.
 
 ## Reporting a vulnerability
 

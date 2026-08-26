@@ -28,6 +28,7 @@ integrity recorded in `THIRD_PARTY_NOTICES.md`, `package-lock.json`, and
 
 ## Publication status
 
-This provenance record prepares a future release. It does not assert that a
-GitHub repository, remote, tag, package, or release has been created or
-published.
+This provenance record accompanies a local release candidate whose publication
+readiness is blocked pending mandatory live Ubuntu x64 canonical zero-skip CI.
+It does not assert that a GitHub repository, remote, tag, package, or release
+has been created or published.

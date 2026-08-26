@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and revalidate a deterministic source release ZIP."""
+"""Build and revalidate a deterministic, manifest-scoped source release ZIP."""
 
 from __future__ import annotations
 
@@ -10,20 +10,48 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import zipfile
 
 
 ARCHIVE_PREFIX = "reconstructing-raster-icons-v"
+MANIFEST_NAME = "release-manifest.txt"
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 VERSION_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
-EXCLUDED_PARTS = frozenset(
+MAX_SOURCE_FILE_SIZE = 64 * 1024 * 1024
+MAX_RELEASE_SIZE = 512 * 1024 * 1024
+READ_CHUNK_SIZE = 1024 * 1024
+ALLOWED_ROOT_FILES = frozenset(
+    {
+        ".gitignore",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        "SECURITY.md",
+        "SKILL.md",
+        "THIRD_PARTY_NOTICES.md",
+        "canonical-renderer.lock",
+        "package-lock.json",
+        "package.json",
+        "pyproject.toml",
+        MANIFEST_NAME,
+        "requirements-lock.txt",
+        "requirements.txt",
+    }
+)
+ALLOWED_ROOT_DIRECTORIES = frozenset(
+    {".github", "agents", "docs", "references", "schemas", "scripts", "src", "tests"}
+)
+FORBIDDEN_PARTS = frozenset(
     {
         ".git",
-        ".github-release",
         ".idea",
         ".mypy_cache",
         ".nox",
@@ -33,14 +61,11 @@ EXCLUDED_PARTS = frozenset(
         ".venv",
         "__pycache__",
         "build",
+        "diagnostics",
         "dist",
         "node_modules",
+        "run-workspaces",
     }
-)
-EXCLUDED_SUFFIXES = frozenset({".pyc", ".pyo", ".zip", ".sha256"})
-DIAGNOSTIC_NAME_RE = re.compile(
-    r"(?:preview|overlay|diff)-i[0-9]{2}\.png\Z|"
-    r"component-.+-(?:visible|isolated)-i[0-9]{2}\.png\Z"
 )
 REQUIRED_RELEASE_FILES = frozenset(
     {
@@ -60,6 +85,7 @@ REQUIRED_RELEASE_FILES = frozenset(
         "package-lock.json",
         "package.json",
         "pyproject.toml",
+        MANIFEST_NAME,
         "references/acceptance-model.md",
         "references/reconstruction-workflow.md",
         "references/security-and-rendering.md",
@@ -81,7 +107,7 @@ REQUIRED_RELEASE_FILES = frozenset(
 
 
 class ReleaseBuildError(RuntimeError):
-    """Raised when a source or archive violates the release contract."""
+    """Raised when a source, archive, or output violates the release contract."""
 
 
 @dataclass(frozen=True, order=True)
@@ -93,132 +119,263 @@ class ReleaseEntry:
     mode: int
 
 
-def _is_relative_to(path: Path, root: Path) -> bool:
+def _directory_flags() -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    return flags
+
+
+def _file_read_flags() -> int:
+    flags = os.O_RDONLY | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    return flags
+
+
+def _file_create_flags() -> int:
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    return flags
+
+
+def _require_descriptor_primitives() -> None:
+    required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    missing = [name for name in required if not hasattr(os, name)]
+    if missing or os.open not in os.supports_dir_fd:
+        details = ", ".join(missing or ("descriptor-relative os.open",))
+        raise ReleaseBuildError(f"platform lacks required safe filesystem primitives: {details}")
+
+
+def _absolute_path(path: Path) -> Path:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return Path(os.path.abspath(os.fspath(candidate)))
+
+
+def _open_root_directory(path: Path, label: str) -> tuple[Path, int]:
+    _require_descriptor_primitives()
+    candidate = _absolute_path(path)
+    if candidate == Path(candidate.anchor):
+        raise ReleaseBuildError(f"filesystem root is not a valid {label}")
     try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
+        descriptor = os.open(candidate, _directory_flags())
+    except OSError as error:
+        raise ReleaseBuildError(f"{label} is unavailable or unsafe: {candidate}") from error
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.close(descriptor)
+        raise ReleaseBuildError(f"{label} must be a directory")
+    return candidate, descriptor
 
 
 def resolve_source_root(source: Path) -> Path:
-    """Resolve a real non-root directory without accepting a symlink entrypoint."""
+    """Return an absolute source path after a no-follow directory open."""
 
-    candidate = source.expanduser()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
+    candidate, descriptor = _open_root_directory(source, "source root")
+    os.close(descriptor)
+    return candidate
+
+
+def _same_or_nested(path: Path, root: Path) -> bool:
     try:
-        metadata = candidate.lstat()
-    except OSError as error:
-        raise ReleaseBuildError(f"source root is unavailable: {candidate}") from error
-    if stat.S_ISLNK(metadata.st_mode):
-        raise ReleaseBuildError("source root must not be a symlink")
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise ReleaseBuildError("source root must be a directory")
-    resolved = candidate.resolve(strict=True)
-    if resolved == Path(resolved.anchor):
-        raise ReleaseBuildError("filesystem root is not a valid release source")
-    return resolved
+        return os.path.commonpath((os.fspath(path), os.fspath(root))) == os.fspath(root)
+    except ValueError:
+        return False
 
 
 def validate_output_root(source: Path, output: Path) -> Path:
-    """Require a dedicated output directory outside and below no source root."""
+    """Apply the lexical separation policy before opening the output directory."""
 
-    source = source.resolve(strict=True)
-    candidate = output.expanduser()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    if candidate.exists() and candidate.is_symlink():
-        raise ReleaseBuildError("output root must not be a symlink")
-    resolved = candidate.resolve(strict=False)
-    if _is_relative_to(resolved, source) or _is_relative_to(source, resolved):
+    source_absolute = _absolute_path(source)
+    output_absolute = _absolute_path(output)
+    if (
+        output_absolute == Path(output_absolute.anchor)
+        or _same_or_nested(output_absolute, source_absolute)
+        or _same_or_nested(source_absolute, output_absolute)
+    ):
         raise ReleaseBuildError("output root must be separate from the source tree")
-    return resolved
+    return output_absolute
 
 
-def _excluded(relative: PurePosixPath) -> bool:
-    if EXCLUDED_PARTS.intersection(relative.parts):
-        return True
-    if relative.name == ".DS_Store" or relative.suffix.lower() in EXCLUDED_SUFFIXES:
-        return True
-    if relative.parts[:3] == ("tests", "behavioral", "evidence"):
-        return True
-    if "diagnostics" in relative.parts or "run-workspaces" in relative.parts:
-        return True
-    return DIAGNOSTIC_NAME_RE.fullmatch(relative.name) is not None
+def _descriptor_is_within(ancestor: os.stat_result, child_fd: int) -> bool:
+    """Compare an opened directory to a child and each opened parent directory."""
 
-
-def _read_regular_file(path: Path, relative: str) -> bytes:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    current = os.dup(child_fd)
     try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        raise ReleaseBuildError(f"could not safely open source entry: {relative}") from error
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ReleaseBuildError(f"release entry is not a regular file: {relative}")
-        chunks: list[bytes] = []
         while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                return b"".join(chunks)
-            chunks.append(chunk)
+            metadata = os.fstat(current)
+            if (metadata.st_dev, metadata.st_ino) == (ancestor.st_dev, ancestor.st_ino):
+                return True
+            parent = os.open("..", _directory_flags(), dir_fd=current)
+            parent_metadata = os.fstat(parent)
+            if (parent_metadata.st_dev, parent_metadata.st_ino) == (
+                metadata.st_dev,
+                metadata.st_ino,
+            ):
+                os.close(parent)
+                return False
+            os.close(current)
+            current = parent
     finally:
+        os.close(current)
+
+
+def _validate_open_root_separation(source_fd: int, output_fd: int) -> None:
+    if _descriptor_is_within(os.fstat(source_fd), output_fd) or _descriptor_is_within(
+        os.fstat(output_fd), source_fd
+    ):
+        raise ReleaseBuildError("opened output root must be separate from the source tree")
+
+
+def _safe_relative_path(name: str, context: str) -> PurePosixPath:
+    if not name or "\x00" in name or "\\" in name or "\r" in name:
+        raise ReleaseBuildError(f"unsafe {context} name: {name!r}")
+    if name.startswith("/") or name.endswith("/") or "//" in name:
+        raise ReleaseBuildError(f"unsafe {context} path: {name}")
+    parts = name.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ReleaseBuildError(f"unsafe {context} path: {name}")
+    if ":" in parts[0]:
+        raise ReleaseBuildError(f"unsafe {context} drive path: {name}")
+    pure = PurePosixPath(*parts)
+    if pure.as_posix() != name:
+        raise ReleaseBuildError(f"non-canonical {context} path: {name}")
+    return pure
+
+
+def _collision_key(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _validate_allowed_manifest_path(path: PurePosixPath) -> None:
+    if FORBIDDEN_PARTS.intersection(path.parts):
+        raise ReleaseBuildError(f"manifest path uses a forbidden directory: {path}")
+    if path.parts[:3] == ("tests", "behavioral", "evidence"):
+        raise ReleaseBuildError(f"raw behavioral evidence is not releasable: {path}")
+    if len(path.parts) == 1:
+        if path.name not in ALLOWED_ROOT_FILES:
+            raise ReleaseBuildError(f"manifest path is outside the root-file policy: {path}")
+    elif path.parts[0] not in ALLOWED_ROOT_DIRECTORIES:
+        raise ReleaseBuildError(f"manifest path is outside the directory policy: {path}")
+
+
+def parse_release_manifest(payload: bytes) -> tuple[str, ...]:
+    """Decode and validate the exact sorted allowlist used for packaging."""
+
+    try:
+        text = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ReleaseBuildError("release manifest must be valid UTF-8") from error
+    if not text.endswith("\n"):
+        raise ReleaseBuildError("release manifest must end with one LF")
+    names = text[:-1].split("\n")
+    if not names or any(not name for name in names):
+        raise ReleaseBuildError("release manifest contains an empty entry")
+    if names != sorted(names):
+        raise ReleaseBuildError("release manifest entries must be sorted")
+    if len(names) != len(set(names)):
+        raise ReleaseBuildError("release manifest contains duplicate paths")
+
+    collision_keys: dict[str, str] = {}
+    for name in names:
+        pure = _safe_relative_path(name, "manifest")
+        _validate_allowed_manifest_path(pure)
+        key = _collision_key(name)
+        previous = collision_keys.get(key)
+        if previous is not None:
+            raise ReleaseBuildError(f"release manifest path collision: {previous!r} and {name!r}")
+        collision_keys[key] = name
+
+    missing = sorted(REQUIRED_RELEASE_FILES - set(names))
+    if missing:
+        raise ReleaseBuildError(f"release manifest is incomplete: {', '.join(missing)}")
+    if names.count(MANIFEST_NAME) != 1:
+        raise ReleaseBuildError("release manifest must include itself exactly once")
+    return tuple(names)
+
+
+def _open_directory_at(parent_fd: int, name: str, context: str) -> int:
+    try:
+        descriptor = os.open(name, _directory_flags(), dir_fd=parent_fd)
+    except OSError as error:
+        raise ReleaseBuildError(f"unsafe or unavailable {context} directory: {name}") from error
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
         os.close(descriptor)
+        raise ReleaseBuildError(f"{context} entry is not a directory: {name}")
+    return descriptor
+
+
+def _read_regular_file_at(root_fd: int, relative: str) -> bytes:
+    """Read a bounded regular file through a no-follow descriptor walk."""
+
+    pure = _safe_relative_path(relative, "source")
+    directory = os.dup(root_fd)
+    try:
+        for component in pure.parts[:-1]:
+            next_directory = _open_directory_at(directory, component, f"source {relative}")
+            os.close(directory)
+            directory = next_directory
+        try:
+            descriptor = os.open(pure.name, _file_read_flags(), dir_fd=directory)
+        except OSError as error:
+            raise ReleaseBuildError(f"could not safely open source entry: {relative}") from error
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ReleaseBuildError(f"release entry is not a regular file: {relative}")
+            if metadata.st_nlink != 1:
+                raise ReleaseBuildError(f"release entry must have exactly one link: {relative}")
+            if metadata.st_size > MAX_SOURCE_FILE_SIZE:
+                raise ReleaseBuildError(f"release entry exceeds the size limit: {relative}")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, min(READ_CHUNK_SIZE, MAX_SOURCE_FILE_SIZE + 1 - total))
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_SOURCE_FILE_SIZE:
+                    raise ReleaseBuildError(f"release entry exceeds the size limit: {relative}")
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+
+
+def _collect_entries_from_fd(source_fd: int) -> tuple[ReleaseEntry, ...]:
+    manifest = _read_regular_file_at(source_fd, MANIFEST_NAME)
+    names = parse_release_manifest(manifest)
+    entries: list[ReleaseEntry] = []
+    total_size = 0
+    for relative in names:
+        data = manifest if relative == MANIFEST_NAME else _read_regular_file_at(source_fd, relative)
+        total_size += len(data)
+        if total_size > MAX_RELEASE_SIZE:
+            raise ReleaseBuildError("release payload exceeds the total size limit")
+        mode = 0o755 if relative.startswith("scripts/") else 0o644
+        entries.append(ReleaseEntry(relative=relative, data=data, mode=mode))
+    return tuple(entries)
 
 
 def collect_entries(source: Path) -> tuple[ReleaseEntry, ...]:
-    """Snapshot included regular files while rejecting source-tree symlinks."""
+    """Snapshot only files declared in the committed release manifest."""
 
-    source = source.resolve(strict=True)
-    entries: list[ReleaseEntry] = []
-    for directory, directory_names, file_names in os.walk(source, topdown=True, followlinks=False):
-        current = Path(directory)
-        retained_directories: list[str] = []
-        for name in sorted(directory_names):
-            path = current / name
-            relative = PurePosixPath(path.relative_to(source).as_posix())
-            if _excluded(relative):
-                continue
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                raise ReleaseBuildError(f"release source contains a symlink: {relative}")
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise ReleaseBuildError(f"release source entry is not a directory: {relative}")
-            retained_directories.append(name)
-        directory_names[:] = retained_directories
-
-        for name in sorted(file_names):
-            path = current / name
-            relative_path = PurePosixPath(path.relative_to(source).as_posix())
-            if _excluded(relative_path):
-                continue
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                raise ReleaseBuildError(f"release source contains a symlink: {relative_path}")
-            relative = relative_path.as_posix()
-            data = _read_regular_file(path, relative)
-            mode = 0o755 if relative.startswith("scripts/") else 0o644
-            entries.append(ReleaseEntry(relative=relative, data=data, mode=mode))
-
-    entries.sort()
-    names = [entry.relative for entry in entries]
-    if len(names) != len(set(names)):
-        raise ReleaseBuildError("release source contains duplicate archive names")
-    missing = sorted(REQUIRED_RELEASE_FILES - set(names))
-    if missing:
-        raise ReleaseBuildError(f"release source is incomplete: {', '.join(missing)}")
-    return tuple(entries)
+    _, source_fd = _open_root_directory(source, "source root")
+    try:
+        return _collect_entries_from_fd(source_fd)
+    finally:
+        os.close(source_fd)
 
 
 def reject_absolute_leaks(entries: tuple[ReleaseEntry, ...], source: Path) -> None:
     """Reject machine-local source roots and common home-directory path leaks."""
 
     markers = (
-        str(source).encode("utf-8"),
+        os.fspath(source).encode("utf-8"),
         b"/" + b"Users/",
         b"/" + b"home/",
         b":\\" + b"Users\\",
@@ -229,11 +386,34 @@ def reject_absolute_leaks(entries: tuple[ReleaseEntry, ...], source: Path) -> No
                 raise ReleaseBuildError(f"absolute path leak in release entry: {entry.relative}")
 
 
-def _write_zip(archive_path: Path, entries: tuple[ReleaseEntry, ...]) -> None:
-    temporary = archive_path.with_name(f".{archive_path.name}.tmp")
-    try:
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise ReleaseBuildError("short write while creating release artifact")
+        view = view[written:]
+
+
+def _create_transaction_file(output_fd: int, label: str) -> tuple[str, int]:
+    for _ in range(32):
+        name = f".release-{label}-{secrets.token_hex(16)}.tmp"
+        try:
+            descriptor = os.open(name, _file_create_flags(), 0o600, dir_fd=output_fd)
+        except FileExistsError:
+            continue
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            os.close(descriptor)
+            raise ReleaseBuildError("transaction output is not a private regular file")
+        return name, descriptor
+    raise ReleaseBuildError("could not allocate a unique transaction output")
+
+
+def _write_zip_fd(descriptor: int, entries: tuple[ReleaseEntry, ...]) -> None:
+    with os.fdopen(os.dup(descriptor), "w+b") as stream:
         with zipfile.ZipFile(
-            temporary,
+            stream,
             mode="w",
             compression=zipfile.ZIP_DEFLATED,
             compresslevel=9,
@@ -245,54 +425,151 @@ def _write_zip(archive_path: Path, entries: tuple[ReleaseEntry, ...]) -> None:
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = (stat.S_IFREG | entry.mode) << 16
                 archive.writestr(info, entry.data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
-        os.replace(temporary, archive_path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.fchmod(descriptor, 0o644)
+    os.fsync(descriptor)
+
+
+def _hash_fd(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(descriptor, READ_CHUNK_SIZE)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
 
 
 def _safe_member_path(name: str) -> PurePosixPath:
-    if not name or "\x00" in name or "\\" in name:
-        raise ReleaseBuildError(f"unsafe ZIP member name: {name!r}")
-    pure = PurePosixPath(name)
-    if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
-        raise ReleaseBuildError(f"unsafe ZIP member path: {name}")
-    if pure.parts and ":" in pure.parts[0]:
-        raise ReleaseBuildError(f"unsafe ZIP member drive path: {name}")
-    return pure
+    return _safe_relative_path(name, "ZIP member")
+
+
+def _validated_zip_infos(archive: zipfile.ZipFile) -> tuple[zipfile.ZipInfo, ...]:
+    infos = archive.infolist()
+    seen: set[str] = set()
+    collisions: dict[str, str] = {}
+    total_size = 0
+    for info in infos:
+        _safe_member_path(info.filename)
+        if info.filename in seen:
+            raise ReleaseBuildError(f"duplicate ZIP member: {info.filename}")
+        seen.add(info.filename)
+        key = _collision_key(info.filename)
+        previous = collisions.get(key)
+        if previous is not None:
+            raise ReleaseBuildError(f"ZIP member path collision: {previous!r} and {info.filename!r}")
+        collisions[key] = info.filename
+        member_mode = info.external_attr >> 16
+        if info.is_dir() or stat.S_ISLNK(member_mode) or not stat.S_ISREG(member_mode):
+            raise ReleaseBuildError(f"ZIP member is not a regular file: {info.filename}")
+        if stat.S_IMODE(member_mode) not in {0o644, 0o755}:
+            raise ReleaseBuildError(f"ZIP member has an unsupported mode: {info.filename}")
+        if info.file_size > MAX_SOURCE_FILE_SIZE:
+            raise ReleaseBuildError(f"ZIP member exceeds the size limit: {info.filename}")
+        total_size += info.file_size
+        if total_size > MAX_RELEASE_SIZE:
+            raise ReleaseBuildError("ZIP payload exceeds the total size limit")
+    return tuple(infos)
+
+
+def _open_or_create_directory_at(parent_fd: int, name: str, context: str) -> int:
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    except OSError as error:
+        raise ReleaseBuildError(f"could not create {context} directory: {name}") from error
+    return _open_directory_at(parent_fd, name, context)
+
+
+def _unlink_owned_at(parent_fd: int, name: str, owned: os.stat_result) -> None:
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+        os.unlink(name, dir_fd=parent_fd)
+
+
+def _extract_archive_to_fd(archive: zipfile.ZipFile, root_fd: int) -> tuple[str, ...]:
+    """Extract validated members through a destination root descriptor."""
+
+    infos = _validated_zip_infos(archive)
+    written: list[str] = []
+    for info in infos:
+        pure = _safe_member_path(info.filename)
+        directory = os.dup(root_fd)
+        descriptor: int | None = None
+        owned: os.stat_result | None = None
+        try:
+            for component in pure.parts[:-1]:
+                next_directory = _open_or_create_directory_at(
+                    directory, component, f"ZIP member {info.filename}"
+                )
+                os.close(directory)
+                directory = next_directory
+            try:
+                descriptor = os.open(pure.name, _file_create_flags(), 0o600, dir_fd=directory)
+            except OSError as error:
+                raise ReleaseBuildError(
+                    f"ZIP member would overwrite or use an unsafe path: {info.filename}"
+                ) from error
+            owned = os.fstat(descriptor)
+            if not stat.S_ISREG(owned.st_mode) or owned.st_nlink != 1:
+                raise ReleaseBuildError(f"extracted ZIP target is not private: {info.filename}")
+            remaining = info.file_size
+            with archive.open(info, "r") as member:
+                while True:
+                    chunk = member.read(min(READ_CHUNK_SIZE, remaining + 1))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    if remaining < 0:
+                        raise ReleaseBuildError(f"ZIP member expanded beyond its declared size: {info.filename}")
+                    _write_all(descriptor, chunk)
+            if remaining != 0:
+                raise ReleaseBuildError(f"ZIP member was truncated: {info.filename}")
+            os.fchmod(descriptor, stat.S_IMODE(info.external_attr >> 16))
+            os.fsync(descriptor)
+            written.append(info.filename)
+        except BaseException:
+            if owned is not None:
+                _unlink_owned_at(directory, pure.name, owned)
+            raise
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory)
+    return tuple(written)
+
+
+def _open_zip_from_fd(descriptor: int) -> tuple[zipfile.ZipFile, object]:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    stream = os.fdopen(os.dup(descriptor), "rb")
+    try:
+        archive = zipfile.ZipFile(stream)
+    except BaseException:
+        stream.close()
+        raise
+    return archive, stream
 
 
 def safe_extract(archive_path: Path, destination: Path) -> tuple[Path, ...]:
-    """Extract only unique regular files contained by a fresh destination."""
+    """Extract unique regular files without following destination path entries."""
 
-    if destination.is_symlink():
-        raise ReleaseBuildError("extraction destination must not be a symlink")
-    destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-    root = destination.resolve(strict=True)
-    written: list[Path] = []
-    seen: set[str] = set()
-    with zipfile.ZipFile(archive_path) as archive:
-        for info in archive.infolist():
-            pure = _safe_member_path(info.filename)
-            if info.filename in seen:
-                raise ReleaseBuildError(f"duplicate ZIP member: {info.filename}")
-            seen.add(info.filename)
-            member_mode = info.external_attr >> 16
-            if info.is_dir() or stat.S_ISLNK(member_mode) or not stat.S_ISREG(member_mode):
-                raise ReleaseBuildError(f"ZIP member is not a regular file: {info.filename}")
-            target = root.joinpath(*pure.parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            resolved_parent = target.parent.resolve(strict=True)
-            if not _is_relative_to(resolved_parent, root):
-                raise ReleaseBuildError(f"ZIP member escapes extraction root: {info.filename}")
-            if target.exists() or target.is_symlink():
-                raise ReleaseBuildError(f"ZIP member would overwrite a path: {info.filename}")
-            target.write_bytes(archive.read(info))
-            target.chmod(stat.S_IMODE(member_mode))
-            written.append(target)
-    return tuple(written)
+    destination_absolute = _absolute_path(destination)
+    try:
+        os.makedirs(destination_absolute, mode=0o700, exist_ok=True)
+    except OSError as error:
+        raise ReleaseBuildError("could not create extraction destination") from error
+    _, destination_fd = _open_root_directory(destination_absolute, "extraction destination")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            written = _extract_archive_to_fd(archive, destination_fd)
+    finally:
+        os.close(destination_fd)
+    return tuple(destination_absolute.joinpath(*PurePosixPath(name).parts) for name in written)
 
 
 def _run_validator(command: list[str], root: Path) -> None:
@@ -314,16 +591,27 @@ def _run_validator(command: list[str], root: Path) -> None:
         raise ReleaseBuildError(f"extracted release validation failed: {diagnostic}")
 
 
-def validate_extracted_release(archive_path: Path) -> None:
+def validate_extracted_release(archive_source: Path | int) -> None:
     """Safely extract and run repository-local skill and schema validators."""
 
     with tempfile.TemporaryDirectory(prefix="reconstructing-raster-icons-release-") as temporary:
         root = Path(temporary)
-        safe_extract(archive_path, root)
-        _run_validator(
-            [sys.executable, "scripts/validate_skill.py", "--path", "."],
-            root,
-        )
+        _, root_fd = _open_root_directory(root, "validation extraction destination")
+        try:
+            if isinstance(archive_source, int):
+                archive, stream = _open_zip_from_fd(archive_source)
+                try:
+                    _extract_archive_to_fd(archive, root_fd)
+                finally:
+                    archive.close()
+                    stream.close()
+            else:
+                with zipfile.ZipFile(archive_source) as archive:
+                    _extract_archive_to_fd(archive, root_fd)
+        finally:
+            os.close(root_fd)
+
+        _run_validator([sys.executable, "scripts/validate_skill.py", "--path", "."], root)
         contract_root = root / "tests" / "fixtures" / "contracts"
         documents = sorted(contract_root.glob("valid-*.json"))
         documents.extend(sorted(contract_root.glob("conformance-valid-*.json")))
@@ -342,26 +630,103 @@ def validate_extracted_release(archive_path: Path) -> None:
         )
 
 
+def _publish_no_clobber(
+    output_fd: int,
+    temporary_name: str,
+    final_name: str,
+    owned: os.stat_result,
+) -> None:
+    try:
+        os.link(
+            temporary_name,
+            final_name,
+            src_dir_fd=output_fd,
+            dst_dir_fd=output_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError as error:
+        raise ReleaseBuildError(f"release output already exists: {final_name}") from error
+    except OSError as error:
+        raise ReleaseBuildError(f"could not safely publish release output: {final_name}") from error
+    published = os.stat(final_name, dir_fd=output_fd, follow_symlinks=False)
+    if (published.st_dev, published.st_ino) != (owned.st_dev, owned.st_ino):
+        raise ReleaseBuildError(f"published release output changed unexpectedly: {final_name}")
+
+
 def build_release(source: Path, output: Path, version: str) -> tuple[Path, Path, str, int]:
-    """Build, hash, safely extract, and validate one release archive."""
+    """Build, hash, safely extract, validate, and atomically publish a release."""
 
     if VERSION_RE.fullmatch(version) is None:
         raise ReleaseBuildError("version must be a plain semantic version such as 0.1.0")
-    source_root = resolve_source_root(source)
+    source_root, source_fd = _open_root_directory(source, "source root")
     output_root = validate_output_root(source_root, output)
-    output_root.mkdir(parents=True, exist_ok=True)
-    if output_root.is_symlink():
-        raise ReleaseBuildError("output root must not be a symlink")
-    entries = collect_entries(source_root)
-    reject_absolute_leaks(entries, source_root)
+    try:
+        os.makedirs(output_root, mode=0o700, exist_ok=True)
+        _, output_fd = _open_root_directory(output_root, "output root")
+    except BaseException:
+        os.close(source_fd)
+        raise
 
-    archive_path = output_root / f"{ARCHIVE_PREFIX}{version}.zip"
-    checksum_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
-    _write_zip(archive_path, entries)
-    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    checksum_path.write_text(f"{digest}  {archive_path.name}\n", encoding="ascii", newline="\n")
-    validate_extracted_release(archive_path)
-    return archive_path, checksum_path, digest, len(entries)
+    archive_name = f"{ARCHIVE_PREFIX}{version}.zip"
+    checksum_name = f"{archive_name}.sha256"
+    archive_path = output_root / archive_name
+    checksum_path = output_root / checksum_name
+    archive_temporary = checksum_temporary = None
+    archive_fd = checksum_fd = None
+    archive_owned = checksum_owned = None
+    published: list[tuple[str, os.stat_result]] = []
+    try:
+        _validate_open_root_separation(source_fd, output_fd)
+        entries = _collect_entries_from_fd(source_fd)
+        reject_absolute_leaks(entries, source_root)
+
+        archive_temporary, archive_fd = _create_transaction_file(output_fd, "archive")
+        _write_zip_fd(archive_fd, entries)
+        archive_owned = os.fstat(archive_fd)
+        digest = _hash_fd(archive_fd)
+
+        checksum_temporary, checksum_fd = _create_transaction_file(output_fd, "checksum")
+        checksum_payload = f"{digest}  {archive_name}\n".encode("ascii")
+        _write_all(checksum_fd, checksum_payload)
+        os.fchmod(checksum_fd, 0o644)
+        os.fsync(checksum_fd)
+        checksum_owned = os.fstat(checksum_fd)
+
+        validate_extracted_release(archive_fd)
+
+        _publish_no_clobber(
+            output_fd, archive_temporary, archive_name, archive_owned
+        )
+        published.append((archive_name, archive_owned))
+        _publish_no_clobber(
+            output_fd, checksum_temporary, checksum_name, checksum_owned
+        )
+        published.append((checksum_name, checksum_owned))
+        os.fsync(output_fd)
+
+        _unlink_owned_at(output_fd, archive_temporary, archive_owned)
+        archive_temporary = None
+        _unlink_owned_at(output_fd, checksum_temporary, checksum_owned)
+        checksum_temporary = None
+        os.fsync(output_fd)
+        return archive_path, checksum_path, digest, len(entries)
+    except BaseException as error:
+        for final_name, owned in reversed(published):
+            _unlink_owned_at(output_fd, final_name, owned)
+        if isinstance(error, (OSError, zipfile.BadZipFile)):
+            raise ReleaseBuildError(f"release transaction failed: {error}") from error
+        raise
+    finally:
+        if archive_owned is not None and archive_temporary is not None:
+            _unlink_owned_at(output_fd, archive_temporary, archive_owned)
+        if checksum_owned is not None and checksum_temporary is not None:
+            _unlink_owned_at(output_fd, checksum_temporary, checksum_owned)
+        if archive_fd is not None:
+            os.close(archive_fd)
+        if checksum_fd is not None:
+            os.close(checksum_fd)
+        os.close(output_fd)
+        os.close(source_fd)
 
 
 def parse_args() -> argparse.Namespace:

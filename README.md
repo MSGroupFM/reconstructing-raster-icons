@@ -94,9 +94,11 @@ python scripts/build_release.py \
   --source . --output /path/to/release-output --version 0.1.0
 ```
 
-The builder fixes entry order, timestamps, and permissions; rejects symlinks
-and path leaks; safely re-extracts the ZIP; and reruns the repository-local
-skill and schema validators. The development repository retains behavioral
+The builder reads only the exact paths in the committed
+`release-manifest.txt`, fixes entry order, timestamps, and permissions,
+rejects unsafe files and path leaks, publishes without overwriting existing
+outputs, safely re-extracts the ZIP, and reruns the repository-local skill and
+schema validators. The development repository retains behavioral
 RED/GREEN evidence. The ZIP omits `tests/behavioral/evidence/` because that
 directory combines summaries with verbatim agent-run records and local
 harness provenance; reusable scenario prompts remain in the archive.
@@ -109,8 +111,9 @@ harness provenance; reusable scenario prompts remain in the archive.
 - Baseline plus at most eight refinements is the default; stalled or exhausted
   runs stop without lowering the target or tolerances.
 - Canonical acceptance requires the locked renderer and supported isolation.
-- Live Linux-x64 canonical CI execution is not claimed by the prepared source
-  tree; see `docs/releases/v0.1.0.md` for the explicit verification boundary.
+- Publication readiness is **BLOCKED** until the mandatory live Ubuntu x64
+  canonical CI job completes with zero skips; see
+  `docs/releases/v0.1.0.md` for the explicit verification boundary.
 - No GitHub remote, tag, release, or package publication is created by these
   files.
 

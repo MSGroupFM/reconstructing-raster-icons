@@ -664,6 +664,18 @@ def _cross(first: Point, second: Point) -> float:
     return first[0] * second[1] - first[1] * second[0]
 
 
+def _cross_is_zero(first: Point, second: Point) -> bool:
+    """Classify a computed 2-D cross product at floating-point precision."""
+    positive = first[0] * second[1]
+    negative = first[1] * second[0]
+    roundoff = 32.0 * (math.ulp(abs(positive)) + math.ulp(abs(negative)))
+    return abs(positive - negative) <= roundoff
+
+
+def _parameters_close(first: float, second: float) -> bool:
+    return abs(first - second) <= 32.0 * math.ulp(max(1.0, abs(first), abs(second)))
+
+
 def _segment_intersection_events(
     first: tuple[Point, Point], second: tuple[Point, Point]
 ) -> tuple[tuple[str, float, float, float, float], ...]:
@@ -676,19 +688,19 @@ def _segment_intersection_events(
     denominator = _cross(first_vector, second_vector)
 
     def snap(parameter: float) -> float:
-        if abs(parameter) <= 16.0 * math.ulp(max(1.0, abs(parameter))):
+        if abs(parameter) <= 32.0 * math.ulp(max(1.0, abs(parameter))):
             return 0.0
-        if abs(parameter - 1.0) <= 16.0 * math.ulp(max(1.0, abs(parameter))):
+        if abs(parameter - 1.0) <= 32.0 * math.ulp(max(1.0, abs(parameter))):
             return 1.0
         return parameter
 
-    if denominator != 0.0:
+    if not _cross_is_zero(first_vector, second_vector):
         first_parameter = snap(_cross(offset, second_vector) / denominator)
         second_parameter = snap(_cross(offset, first_vector) / denominator)
         if 0.0 <= first_parameter <= 1.0 and 0.0 <= second_parameter <= 1.0:
             return (("transverse", first_parameter, first_parameter, second_parameter, second_parameter),)
         return ()
-    if _cross(offset, first_vector) != 0.0:
+    if not _cross_is_zero(offset, first_vector):
         return ()
     first_squared = first_vector[0] ** 2 + first_vector[1] ** 2
     second_squared = second_vector[0] ** 2 + second_vector[1] ** 2
@@ -700,8 +712,10 @@ def _segment_intersection_events(
     ) / first_squared
     low, high = max(0.0, min(first_c, first_d)), min(1.0, max(first_c, first_d))
     low, high = snap(low), snap(high)
-    if low > high:
+    if low > high and not _parameters_close(low, high):
         return ()
+    if _parameters_close(low, high):
+        low = high = snap((low + high) / 2.0)
 
     def second_parameter(first_parameter: float) -> float:
         point = (a[0] + first_parameter * first_vector[0], a[1] + first_parameter * first_vector[1])
@@ -711,7 +725,7 @@ def _segment_intersection_events(
         )
 
     second_low, second_high = second_parameter(low), second_parameter(high)
-    kind = "touch" if low == high else "overlap"
+    kind = "touch" if _parameters_close(low, high) else "overlap"
     return ((kind, low, high, second_low, second_high),)
 
 
@@ -725,16 +739,69 @@ def _path_parameter_data(path: PolylineSubpath) -> tuple[tuple[tuple[Point, Poin
     return segments, tuple(prefixes), total
 
 
+def _branch_angles(path: PolylineSubpath, segment_index: int, parameter: float) -> tuple[float, ...]:
+    """Return the one or two path rays incident to an isolated intersection."""
+    segments = tuple(zip(path.points, path.points[1:]))
+    start, end = segments[segment_index]
+    point = (
+        start[0] + parameter * (end[0] - start[0]),
+        start[1] + parameter * (end[1] - start[1]),
+    )
+    ray_points: list[Point]
+    if not _parameters_close(parameter, 0.0) and not _parameters_close(parameter, 1.0):
+        ray_points = [start, end]
+    elif _parameters_close(parameter, 0.0):
+        ray_points = [end]
+        if segment_index > 0:
+            ray_points.append(segments[segment_index - 1][0])
+        elif path.closed:
+            ray_points.append(segments[-1][0])
+    else:
+        ray_points = [start]
+        if segment_index + 1 < len(segments):
+            ray_points.append(segments[segment_index + 1][1])
+        elif path.closed:
+            ray_points.append(segments[0][1])
+    return tuple(math.atan2(other[1] - point[1], other[0] - point[0]) for other in ray_points)
+
+
+def _isolated_intersection_kind(
+    first_path: PolylineSubpath,
+    first_segment_index: int,
+    first_parameter: float,
+    second_path: PolylineSubpath,
+    second_segment_index: int,
+    second_parameter: float,
+) -> str:
+    """Classify endpoint, transverse crossing, or tangential touch by ray order."""
+    first_angles = _branch_angles(first_path, first_segment_index, first_parameter)
+    second_angles = _branch_angles(second_path, second_segment_index, second_parameter)
+    if len(first_angles) < 2 or len(second_angles) < 2:
+        return "endpoint"
+    cyclic_labels = [
+        label
+        for _, label in sorted(
+            tuple((angle, "first") for angle in first_angles)
+            + tuple((angle, "second") for angle in second_angles)
+        )
+    ]
+    alternating = all(
+        cyclic_labels[index] != cyclic_labels[(index + 1) % len(cyclic_labels)]
+        for index in range(len(cyclic_labels))
+    )
+    return "transverse" if alternating else "touch"
+
+
 def _intersection_signature(
     subpaths: Sequence[PolylineSubpath],
-) -> tuple[tuple[int, int, tuple[tuple[str, float, float, float, float], ...]], ...]:
+) -> tuple[tuple[int, int, tuple[tuple[str, int, int, int, int], ...]], ...]:
     """Preserve intersection count, type, multiplicity and order per path pair."""
     path_data = [_path_parameter_data(path) for path in subpaths]
-    signature: list[tuple[int, int, tuple[tuple[str, float, float, float, float], ...]]] = []
+    signature: list[tuple[int, int, tuple[tuple[str, int, int, int, int], ...]]] = []
     for first_index, (first_segments, first_prefixes, first_total) in enumerate(path_data):
         for second_index in range(first_index, len(path_data)):
             second_segments, second_prefixes, second_total = path_data[second_index]
-            events: set[tuple[str, float, float, float, float]] = set()
+            events: list[tuple[str, float, float, float, float]] = []
             for left_index, first_segment in enumerate(first_segments):
                 for right_index, second_segment in enumerate(second_segments):
                     if first_index == second_index:
@@ -754,21 +821,64 @@ def _intersection_signature(
                             (second_prefixes[right_index] + second_high * _distance(*second_segment)) / second_total,
                         )
                         endpoint = any(
-                            within_tolerance(abs(position), 0.0) or within_tolerance(abs(position - 1.0), 0.0)
+                            _parameters_close(position, 0.0) or _parameters_close(position, 1.0)
                             for position in (*first_positions, *second_positions)
                         )
-                        event_kind = "endpoint" if kind != "overlap" and endpoint else kind
-                        events.add(
-                            (
-                                event_kind,
-                                round(first_positions[0], 12),
-                                round(first_positions[1], 12),
-                                round(second_positions[0], 12),
-                                round(second_positions[1], 12),
+                        if kind == "transverse":
+                            event_kind = _isolated_intersection_kind(
+                                subpaths[first_index],
+                                left_index,
+                                first_low,
+                                subpaths[second_index],
+                                right_index,
+                                second_low,
                             )
+                        else:
+                            event_kind = "endpoint" if kind != "overlap" and endpoint else kind
+                        event = (
+                            event_kind,
+                            first_positions[0],
+                            first_positions[1],
+                            second_positions[0],
+                            second_positions[1],
                         )
+                        if not any(
+                            existing[0] == event[0]
+                            and all(
+                                _parameters_close(existing_value, event_value)
+                                for existing_value, event_value in zip(existing[1:], event[1:], strict=True)
+                            )
+                            for existing in events
+                        ):
+                            events.append(event)
             if events:
-                signature.append((first_index, second_index, tuple(sorted(events))))
+                ordered = sorted(events, key=lambda event: (event[1], event[2], event[3], event[4], event[0]))
+
+                def ranks(values: list[float]) -> tuple[int, ...]:
+                    indexed = sorted(enumerate(values), key=lambda item: item[1])
+                    result = [0] * len(values)
+                    rank = 0
+                    previous: float | None = None
+                    for index, value in indexed:
+                        if previous is not None and not _parameters_close(value, previous):
+                            rank += 1
+                        result[index] = rank
+                        previous = value
+                    return tuple(result)
+
+                first_ranks = ranks([value for event in ordered for value in event[1:3]])
+                second_ranks = ranks([value for event in ordered for value in event[3:5]])
+                encoded = tuple(
+                    (
+                        event[0],
+                        first_ranks[2 * index],
+                        first_ranks[2 * index + 1],
+                        second_ranks[2 * index],
+                        second_ranks[2 * index + 1],
+                    )
+                    for index, event in enumerate(ordered)
+                )
+                signature.append((first_index, second_index, encoded))
     return tuple(signature)
 
 

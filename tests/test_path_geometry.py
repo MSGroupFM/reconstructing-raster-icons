@@ -13,6 +13,7 @@ from reconstructing_raster_icons.geometry import (  # noqa: E402
     PathIntegrityError,
     PolylineSubpath,
     _hausdorff_operation_estimate,
+    _intersection_signature,
     evaluate_geometry_constraints,
     flatten_svg_path,
     simplify_subpaths,
@@ -177,6 +178,28 @@ class SimplificationTests(unittest.TestCase):
         )
 
         self.assertEqual(simplify_subpaths((self_crossing,), delta=0.3), (self_crossing,))
+
+    def test_topology_signature_classifies_scaled_overlap_and_endpoint(self) -> None:
+        horizontal = PolylineSubpath(((0.0, 0.0), (1e-9, 0.0)), False)
+        overlap = PolylineSubpath(((0.5e-9, 0.0), (1.5e-9, 0.0)), False)
+        endpoint = PolylineSubpath(((1e-9, 0.0), (1e-9, 1e-9)), False)
+
+        self.assertEqual(
+            _intersection_signature((horizontal, overlap)),
+            ((0, 1, (("overlap", 0, 1, 0, 1),)),),
+        )
+        self.assertEqual(
+            _intersection_signature((horizontal, endpoint)),
+            ((0, 1, (("endpoint", 0, 0, 0, 0),)),),
+        )
+
+    def test_topology_signature_distinguishes_vertex_touch_from_crossing(self) -> None:
+        horizontal = PolylineSubpath(((-1.0, 0.0), (1.0, 0.0)), False)
+        touching = PolylineSubpath(((-1.0, 1.0), (0.0, 0.0), (1.0, 1.0)), False)
+        crossing = PolylineSubpath(((-1.0, 1.0), (0.0, 0.0), (1.0, -1.0)), False)
+
+        self.assertEqual(_intersection_signature((horizontal, touching))[0][2][0][0], "touch")
+        self.assertEqual(_intersection_signature((horizontal, crossing))[0][2][0][0], "transverse")
 
     def test_open_loop_cannot_collapse_to_a_degenerate_candidate(self) -> None:
         source = PolylineSubpath(points=((0.0, 0.0), (1.0, 0.0), (0.0, 0.0)), closed=False)

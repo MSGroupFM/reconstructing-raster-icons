@@ -1370,6 +1370,87 @@ def _ensure_logical_evidence(document: Mapping[str, object]) -> None:
     walk(document)
 
 
+def _iteration_artifact_catalog(
+    evaluation_path: Path,
+    evaluation_payload: bytes,
+    evaluated: Mapping[str, object],
+) -> tuple[list[dict[str, object]], frozenset[str]]:
+    """Collect every immutable evaluation artifact through the selected iteration."""
+    selected_iteration = evaluated.get("iteration")
+    if isinstance(selected_iteration, bool) or not isinstance(selected_iteration, int):
+        raise InvalidInputError("evaluation iteration is malformed")
+    selected_report = evaluated.get("report")
+    if not isinstance(selected_report, Mapping):
+        raise InvalidInputError("evaluation report is malformed")
+    if selected_report.get("iteration") != selected_iteration:
+        raise InvalidInputError("evaluation iteration does not match its report")
+    expected_run_id = selected_report.get("run_id")
+    expected_map_hash = evaluated.get("map_sha256")
+    workspace = evaluation_path.parent
+    catalog: dict[str, dict[str, object]] = {}
+    cleanup_ids: set[str] = set()
+
+    for iteration in range(selected_iteration + 1):
+        suffix = _iteration_suffix(iteration)
+        selected = iteration == selected_iteration
+        path = evaluation_path if selected else workspace / f"evaluation-{suffix}.json"
+        payload = evaluation_payload if selected else _snapshot_bytes(
+            path, f"evaluation {suffix}", 20 * 1024 * 1024
+        )
+        document = (
+            dict(evaluated)
+            if selected
+            else _decode_json(payload, f"evaluation {suffix}")
+        )
+        report = document.get("report")
+        if (
+            document.get("stage") != "evaluate_candidate"
+            or document.get("iteration") != iteration
+            or document.get("artifact_id") != f"evaluation-{suffix}"
+            or document.get("map_sha256") != expected_map_hash
+            or not isinstance(report, Mapping)
+            or report.get("iteration") != iteration
+            or report.get("run_id") != expected_run_id
+        ):
+            raise InvalidInputError(f"evaluation {suffix} is not bound to the selected run")
+        validate_document(report, "acceptance-report")
+        artifacts = report.get("artifacts")
+        disposable = document.get("cleanup_logical_ids")
+        if not isinstance(artifacts, list) or not isinstance(disposable, list):
+            raise InvalidInputError(f"evaluation {suffix} artifact inventory is malformed")
+        for artifact in artifacts:
+            if not isinstance(artifact, Mapping):
+                raise InvalidInputError(f"evaluation {suffix} artifact record is malformed")
+            logical_id = str(artifact["logical_id"])
+            record = {
+                "logical_id": logical_id,
+                "sha256": str(artifact["sha256"]),
+                "retention": "retained",
+            }
+            prior = catalog.get(logical_id)
+            if prior is not None and prior != record:
+                raise InvalidInputError(f"artifact {logical_id} conflicts across evaluations")
+            catalog[logical_id] = record
+        evaluation_id = f"evaluation-{suffix}"
+        evaluation_record = {
+            "logical_id": evaluation_id,
+            "sha256": _sha256(payload),
+            "retention": "retained",
+        }
+        prior = catalog.get(evaluation_id)
+        if prior is not None and prior != evaluation_record:
+            raise InvalidInputError(f"artifact {evaluation_id} conflicts across evaluations")
+        catalog[evaluation_id] = evaluation_record
+        cleanup_ids.update(str(item) for item in disposable)
+
+    missing = cleanup_ids.difference(catalog)
+    if missing:
+        raise InvalidInputError(
+            f"evaluation cleanup inventory references uncatalogued artifacts: {sorted(missing)}"
+        )
+    return [catalog[logical_id] for logical_id in sorted(catalog)], frozenset(cleanup_ids)
+
+
 def _finalize_review(
     evaluation: Path, semantic_review: Path, output: Path
 ) -> dict[str, object]:
@@ -1418,14 +1499,10 @@ def _finalize_review(
     )
     final_report["gates"] = gates
     final_report["warnings"] = list(final_report["warnings"]) + list(review["warnings"])
-    cleanup_ids = frozenset(str(item) for item in evaluated.get("cleanup_logical_ids", []))
-    evaluation_id = str(evaluated["artifact_id"])
-    final_report["artifacts"].append(
-        {
-            "logical_id": evaluation_id,
-            "sha256": _sha256(evaluation_payload),
-            "retention": "retained",
-        }
+    final_report["artifacts"], cleanup_ids = _iteration_artifact_catalog(
+        evaluation_path,
+        evaluation_payload,
+        evaluated,
     )
     validate_document(final_report, "acceptance-report")
     _ensure_logical_evidence(final_report)
@@ -1436,23 +1513,25 @@ def _finalize_review(
     artifact_hashes = {
         str(item["logical_id"]): str(item["sha256"]) for item in final_report["artifacts"]
     }
-    cleanup_records: list[dict[str, object]] = []
+    deleted_at: str | None = None
     if run_workspace.exists():
         resolved_workspace = run_workspace.resolve()
         if resolved_workspace == resolved_workspace.parent or resolved_workspace == Path("/"):
             raise InvalidInputError("refusing unsafe run workspace cleanup")
         shutil.rmtree(run_workspace)
         deleted_at = _utc_now()
-        cleanup_records = [
-            {
-                "logical_id": logical_id,
-                "sha256": artifact_hashes[logical_id],
-                "retention": "deleted",
-                "deleted_at": deleted_at,
-            }
-            for logical_id in sorted(cleanup_ids)
-            if logical_id in artifact_hashes
-        ]
+    recorded_at = _utc_now()
+    cleanup_records = []
+    for logical_id in sorted(artifact_hashes):
+        record: dict[str, object] = {
+            "logical_id": logical_id,
+            "sha256": artifact_hashes[logical_id],
+        }
+        if logical_id in cleanup_ids and deleted_at is not None:
+            record.update({"retention": "deleted", "deleted_at": deleted_at})
+        else:
+            record.update({"retention": "retained", "recorded_at": recorded_at})
+        cleanup_records.append(record)
     atomic_write_json(
         cleanup_report_path,
         {
@@ -1460,7 +1539,7 @@ def _finalize_review(
             "stage_version": SCHEMA_VERSION,
             "run_id": final_report["run_id"],
             "started_at": cleanup_started,
-            "recorded_at": _utc_now(),
+            "recorded_at": recorded_at,
             "after_report": output_path.name,
             "artifacts": cleanup_records,
         },

@@ -671,10 +671,67 @@ class FinalizeReviewTests(unittest.TestCase):
                 }.issubset(artifacts)
             )
             for item in cleanup["artifacts"]:
-                self.assertEqual(set(item), {"logical_id", "sha256", "retention", "deleted_at"})
-                self.assertEqual(item["retention"], "deleted")
                 self.assertEqual(item["sha256"], artifacts[item["logical_id"]]["sha256"])
-                self.assertTrue(item["deleted_at"].endswith("Z"))
+                if item["logical_id"] in {
+                    "map-snapshot-i00",
+                    "candidate-i00",
+                    "preview-i00",
+                    "overlay-i00",
+                    "diff-i00",
+                    "diagnostics-i00",
+                    "evaluation-i00",
+                }:
+                    self.assertEqual(item["retention"], "deleted")
+                    self.assertTrue(item["deleted_at"].endswith("Z"))
+                else:
+                    self.assertEqual(item["retention"], "retained")
+                    self.assertTrue(item["recorded_at"].endswith("Z"))
+
+    def test_multi_iteration_finalization_catalogs_every_iteration_before_and_after_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_evaluation = self._evaluation(root)
+            run_dir = first_evaluation.parent
+            evaluate_candidate(
+                root / "reference" / "reconstruction-map-r01.json",
+                root / "candidate.svg",
+                1,
+                run_dir,
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            review = self._review(root)
+            output = root / "acceptance-report.json"
+
+            finalize_review(run_dir / "evaluation-i01.json", review, output)
+            report = json.loads(output.read_text())
+            cleanup = json.loads((root / "cleanup-report.json").read_text())
+            report_artifacts = {item["logical_id"]: item for item in report["artifacts"]}
+            cleanup_artifacts = {item["logical_id"]: item for item in cleanup["artifacts"]}
+            disposable = {
+                f"{kind}-i{iteration:02d}"
+                for iteration in (0, 1)
+                for kind in (
+                    "map-snapshot",
+                    "candidate",
+                    "preview",
+                    "overlay",
+                    "diff",
+                    "diagnostics",
+                    "evaluation",
+                )
+            }
+
+            self.assertTrue(disposable.issubset(report_artifacts))
+            self.assertEqual(set(report_artifacts), set(cleanup_artifacts))
+            for logical_id, item in cleanup_artifacts.items():
+                self.assertEqual(item["sha256"], report_artifacts[logical_id]["sha256"])
+                if logical_id in disposable:
+                    self.assertEqual(item["retention"], "deleted")
+                    self.assertTrue(item["deleted_at"].endswith("Z"))
+                else:
+                    self.assertEqual(item["retention"], "retained")
+                    self.assertTrue(item["recorded_at"].endswith("Z"))
 
     def test_final_report_publish_failure_preserves_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

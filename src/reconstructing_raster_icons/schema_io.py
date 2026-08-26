@@ -6,6 +6,7 @@ import json
 import os
 from fractions import Fraction
 from pathlib import Path
+import re
 import tempfile
 from typing import Final
 
@@ -17,6 +18,9 @@ from .errors import FrozenArtifactError
 
 SCHEMA_DIRECTORY: Final = Path(__file__).resolve().parents[2] / "schemas"
 FORMAT_CHECKER: Final = FormatChecker()
+UTC_TIMESTAMP_RE: Final = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
+)
 
 
 @FORMAT_CHECKER.checks("aspect-ratio-1-to-16")
@@ -31,6 +35,21 @@ def is_aspect_ratio_in_range(value: object) -> bool:
     except (TypeError, ValueError, ZeroDivisionError):
         return False
     return Fraction(1, 16) <= ratio <= Fraction(16, 1)
+
+
+@FORMAT_CHECKER.checks("utc-date-time")
+def is_valid_utc_timestamp(value: object) -> bool:
+    """Accept only calendar-valid ISO 8601 timestamps written with a trailing Z."""
+
+    if not isinstance(value, str) or not UTC_TIMESTAMP_RE.fullmatch(value):
+        return False
+    try:
+        from datetime import datetime
+
+        datetime.fromisoformat(value[:-1])
+    except ValueError:
+        return False
+    return True
 
 
 def _schema_path(schema_name: str) -> Path:

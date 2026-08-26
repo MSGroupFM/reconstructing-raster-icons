@@ -90,6 +90,17 @@ class SchemaContractTests(unittest.TestCase):
                 with self.assertRaises(jsonschema.ValidationError, msg=f"{schema_name}: {timestamp}"):
                     validate_document(document, schema_name)
 
+    def test_required_timestamps_enforce_calendar_validity_and_leap_days(self) -> None:
+        document = draft_fixture()
+        document["created_at"] = "2024-02-29T00:00:00Z"
+        validate_document(document, "reconstruction-map-draft")
+
+        for timestamp in ("2026-02-30T00:00:00Z", "2025-02-29T00:00:00Z"):
+            document = draft_fixture()
+            document["created_at"] = timestamp
+            with self.assertRaises(jsonschema.ValidationError, msg=timestamp):
+                validate_document(document, "reconstruction-map-draft")
+
     def test_gate_catalog_rejects_duplicate_stable_ids(self) -> None:
         report = accepted_report_fixture()
         report["gates"][-1]["gate_id"] = report["gates"][0]["gate_id"]  # type: ignore[index]

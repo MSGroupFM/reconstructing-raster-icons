@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 import hashlib
 from io import BytesIO
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from xml.etree import ElementTree
 
 import numpy as np
 from PIL import Image
@@ -47,6 +49,11 @@ CONTRACTS = FIXTURES / "contracts"
 SECURITY = FIXTURES / "security"
 GOLDEN = REPOSITORY / "tests" / "goldens" / "acceptance-model-1.0.0.json"
 FIXED_TIME = "2026-08-26T12:00:00Z"
+EXACT_NODE = Path("/private/tmp/reconstructing-raster-icons-node/node_modules/node/bin/node")
+PINNED_NODE_SHA256 = "e2d4915d03eda6a2f00a09920e7eeb7a04ad123f9aaad61b1481179fe1bf50e0"
+PINNED_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
+PINNED_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
+PINNED_RUNNER_SHA256 = "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a"
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -319,48 +326,234 @@ def _reference_metrics(
     }
 
 
-def _png_bytes(mask: np.ndarray) -> bytes:
-    rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
-    rgba[mask, :3] = 0
-    rgba[mask, 3] = 255
-    output = BytesIO()
-    Image.fromarray(rgba).save(output, format="PNG", optimize=False, compress_level=9)
-    return output.getvalue()
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _renderer_double(mask: np.ndarray, calls: list[tuple[int, int]]):
-    payload = _png_bytes(mask)
+def _verify_test_renderer_contract() -> tuple[Path, Path, Path]:
+    if not EXACT_NODE.is_file():
+        raise AssertionError(f"exact Node 22.14.0 test fixture is unavailable: {EXACT_NODE}")
+    loader = REPOSITORY / "node_modules" / "@resvg" / "resvg-wasm" / "index.mjs"
+    wasm = REPOSITORY / "node_modules" / "@resvg" / "resvg-wasm" / "index_bg.wasm"
+    runner = REPOSITORY / "scripts" / "render_svg.mjs"
+    expected = {
+        EXACT_NODE: PINNED_NODE_SHA256,
+        loader: PINNED_LOADER_SHA256,
+        wasm: PINNED_WASM_SHA256,
+        runner: PINNED_RUNNER_SHA256,
+    }
+    mismatches = [path.name for path, digest in expected.items() if _sha256(path) != digest]
+    if mismatches:
+        raise AssertionError(f"pinned test renderer hash mismatch: {', '.join(mismatches)}")
+    lock = _read_json(REPOSITORY / "canonical-renderer.lock")
+    if (
+        lock.get("node_version") != "22.14.0"
+        or lock.get("package_version") != "2.6.2"
+        or lock.get("render_options")
+        != {
+            "background": None,
+            "crop": None,
+            "current_color": "#000000",
+            "font_load_system_fonts": False,
+            "shape_rendering": 2,
+            "text_rendering": 2,
+        }
+    ):
+        raise AssertionError("canonical-renderer.lock does not match the test render contract")
+    return loader, wasm, runner
+
+
+def _renderer_contract(
+    calls: list[tuple[str, tuple[int, int], str]],
+):
+    loader, wasm, runner = _verify_test_renderer_contract()
 
     def render(document, size: tuple[int, int], workspace: Path) -> RenderResult:
-        calls.append(size)
-        if mask.shape != (size[1], size[0]):
-            raise AssertionError("fixture renderer mask does not match the requested canvas")
+        candidate_hash = hashlib.sha256(document.xml_bytes).hexdigest()
+        workspace.mkdir(parents=True, exist_ok=True)
+        resolved_workspace = workspace.resolve()
+        with tempfile.TemporaryDirectory(
+            prefix=".pinned-test-render-", dir=resolved_workspace
+        ) as directory:
+            private = Path(directory).resolve()
+            private_runner = private / "scripts" / "render_svg.mjs"
+            private_loader = private / "node_modules" / "@resvg" / "resvg-wasm" / "index.mjs"
+            private_wasm = private / "node_modules" / "@resvg" / "resvg-wasm" / "index_bg.wasm"
+            candidate = private / "candidate.svg"
+            output = private / "render.png"
+            private_runner.parent.mkdir(parents=True)
+            private_loader.parent.mkdir(parents=True)
+            shutil.copyfile(runner, private_runner)
+            shutil.copyfile(loader, private_loader)
+            shutil.copyfile(wasm, private_wasm)
+            candidate.write_bytes(document.xml_bytes)
+            nonce = hashlib.sha256(
+                document.xml_bytes + f"{size[0]}x{size[1]}".encode("ascii")
+            ).hexdigest()
+            completed = subprocess.run(
+                [
+                    str(EXACT_NODE),
+                    "--max-old-space-size=512",
+                    "--permission",
+                    f"--allow-fs-read={private}",
+                    f"--allow-fs-write={private}",
+                    str(private_runner),
+                    str(candidate),
+                    str(output),
+                    str(private_wasm),
+                    str(size[0]),
+                    str(size[1]),
+                    nonce,
+                    str(REPOSITORY / "package.json"),
+                ],
+                check=False,
+                capture_output=True,
+                timeout=15,
+                cwd=private,
+                env={
+                    "LANG": "C.UTF-8",
+                    "LC_ALL": "C.UTF-8",
+                    "NODE_NO_WARNINGS": "1",
+                    "PATH": str(EXACT_NODE.parent),
+                    "TZ": "UTC",
+                },
+            )
+            try:
+                attestation = json.loads(completed.stdout.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as error:
+                raise AssertionError(
+                    "pinned test renderer returned invalid attestation: "
+                    f"stdout={completed.stdout!r}, stderr={completed.stderr!r}"
+                ) from error
+            if (
+                completed.returncode != 0
+                or completed.stderr
+                or attestation.get("render_status") != "ok"
+                or attestation.get("nonce") != nonce
+                or attestation.get("node_version") != "22.14.0"
+            ):
+                raise AssertionError(
+                    "pinned test renderer failed: "
+                    f"returncode={completed.returncode}, stdout={completed.stdout!r}, "
+                    f"stderr={completed.stderr!r}"
+                )
+            payload = output.read_bytes()
+        with Image.open(BytesIO(payload)) as image:
+            image.load()
+            if image.mode != "RGBA" or image.size != size:
+                raise AssertionError("pinned test renderer returned the wrong PNG contract")
+        output_hash = hashlib.sha256(payload).hexdigest()
+        calls.append((candidate_hash, size, output_hash))
+        evidence = RendererEvidence(
+            platform="darwin-arm64-test-contract",
+            node_version="22.14.0",
+            renderer_package="@resvg/resvg-wasm",
+            renderer_package_version="2.6.2",
+            loader_sha256=PINNED_LOADER_SHA256,
+            runner_sha256=PINNED_RUNNER_SHA256,
+            wasm_sha256=PINNED_WASM_SHA256,
+        )
         return RenderResult(
             status=Status.ACCEPTED,
             path=None,
             png_bytes=payload,
-            sha256=hashlib.sha256(payload).hexdigest(),
+            sha256=output_hash,
             size=size,
-            diagnostic="deterministic test contract double; not a live canonical render",
-            observed=RendererEvidence(node_version="test-contract-double"),
-            expected=RendererEvidence(node_version="test-contract-double"),
-            attestation={"render_status": "test-contract-double"},
+            diagnostic=(
+                "pinned Node 22.14.0/resvg-wasm 2.6.2 test contract render; "
+                "not a live Darwin canonical-environment claim"
+            ),
+            observed=evidence,
+            expected=evidence,
+            attestation=attestation,
         )
 
     return render
 
 
-def _diagnostics_double(case: Path, component_ids: list[str]):
-    visible = {
-        name: _mask(case / "candidate-components" / f"{name}-visible.png")
-        for name in component_ids
-    }
-    isolated = {
-        name: _mask(case / "candidate-components" / f"{name}-isolated.png")
-        for name in component_ids
-    }
+def _component_variant(
+    document,
+    components: list[dict[str, object]],
+    selected_id: str,
+    *,
+    isolated: bool,
+) -> bytes:
+    root = copy.deepcopy(document.root)
+    roots = {element.attrib.get("id"): element for element in root.iter() if element.attrib.get("id")}
+    for component in components:
+        component_id = str(component["component_id"])
+        svg_id = str(component["svg_id"])
+        element = roots.get(svg_id)
+        if element is None:
+            raise AssertionError(f"test diagnostic component {svg_id!r} is absent")
+        selected = component_id == selected_id
+        color = "#ffffff" if selected else ("none" if isolated else "#000000")
+        paint_type = str(component["paint_type"])
+        for descendant in element.iter():
+            if descendant.attrib.get("fill") != "none" and (
+                "fill" in descendant.attrib or paint_type in {"fill", "mixed"}
+            ):
+                descendant.set("fill", color)
+            if descendant.attrib.get("stroke") != "none" and (
+                "stroke" in descendant.attrib or paint_type in {"stroke", "mixed"}
+            ):
+                descendant.set("stroke", color)
+    ElementTree.register_namespace("", "http://www.w3.org/2000/svg")
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=False)
+
+
+def _white_component_mask(payload: bytes, size: tuple[int, int]) -> np.ndarray:
+    with Image.open(BytesIO(payload)) as image:
+        image.load()
+        if image.mode != "RGBA" or image.size != size:
+            raise AssertionError("diagnostic PNG has the wrong contract")
+        rgba = np.asarray(image, dtype=np.uint8)
+    luminance = (
+        0.2126 * rgba[..., 0].astype(np.float64)
+        + 0.7152 * rgba[..., 1].astype(np.float64)
+        + 0.0722 * rgba[..., 2].astype(np.float64)
+    )
+    return np.asarray((rgba[..., 3] >= 128) & (luminance >= 127.5), dtype=bool)
+
+
+def _alpha_mask(payload: bytes, size: tuple[int, int]) -> np.ndarray:
+    with Image.open(BytesIO(payload)) as image:
+        image.load()
+        if image.mode != "RGBA" or image.size != size:
+            raise AssertionError("candidate PNG has the wrong contract")
+        return np.asarray(image, dtype=np.uint8)[..., 3] >= 128
+
+
+def _derived_diagnostics(renderer, capture: dict[str, object]):
 
     def diagnostics(document, components, size: tuple[int, int], workspace: Path):
+        visible: dict[str, np.ndarray] = {}
+        isolated: dict[str, np.ndarray] = {}
+        hashes: dict[str, str] = {}
+        component_records = [dict(item) for item in components]
+        for component in component_records:
+            component_id = str(component["component_id"])
+            for kind, destination in (("visible", visible), ("isolated", isolated)):
+                payload = _component_variant(
+                    document,
+                    component_records,
+                    component_id,
+                    isolated=kind == "isolated",
+                )
+                variant = pipeline_module._validate_svg_snapshot(payload)
+                result = renderer(variant, size, workspace)
+                if result.status != Status.ACCEPTED or not result.png_bytes:
+                    raise AssertionError(f"{kind} test diagnostic render failed")
+                destination[component_id] = _white_component_mask(result.png_bytes, size)
+                hashes[f"{component_id}-{kind}"] = result.sha256
+        capture.clear()
+        capture.update(
+            {
+                "visible": {name: mask.copy() for name, mask in visible.items()},
+                "isolated": {name: mask.copy() for name, mask in isolated.items()},
+                "hashes": dict(hashes),
+            }
+        )
         return {"visible": visible, "isolated": isolated}
 
     return diagnostics
@@ -390,7 +583,15 @@ def _golden() -> dict[str, object]:
         raise AssertionError(
             "missing independently checked golden: tests/goldens/acceptance-model-1.0.0.json"
         )
-    return _read_json(GOLDEN)
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise AssertionError(f"duplicate JSON key in acceptance golden: {key}")
+            value[key] = item
+        return value
+
+    return json.loads(GOLDEN.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
 
 
 class FixtureGeneratorTests(unittest.TestCase):
@@ -416,7 +617,10 @@ class FixtureGeneratorTests(unittest.TestCase):
     def test_manifest_declares_every_required_synthetic_fixture_class(self) -> None:
         manifest = _read_json(CONFORMANCE / "manifest.json")
         self.assertEqual(manifest["provenance"], "synthetic-original")
-        self.assertEqual(manifest["renderer_mode"], "deterministic-test-contract-double")
+        self.assertEqual(
+            manifest["renderer_mode"],
+            "pinned-node22-resvg-wasm-2.6.2-test-contract",
+        )
         self.assertEqual(
             set(manifest["fixture_classes"]),
             {
@@ -493,6 +697,71 @@ class IndependentMetricGoldenTests(unittest.TestCase):
 
 
 class PipelineCorpusTests(unittest.TestCase):
+    def test_positive_renderer_contract_changes_when_candidate_geometry_changes(self) -> None:
+        case = CONFORMANCE / "analytic-fill"
+        original = pipeline_module._validate_svg_snapshot((case / "candidate.svg").read_bytes())
+        mutated = pipeline_module._validate_svg_snapshot(
+            (case / "candidate.svg").read_bytes().replace(b'width="32"', b'width="24"')
+        )
+        calls: list[tuple[str, tuple[int, int], str]] = []
+        renderer = _renderer_contract(calls)
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            first = renderer(original, (1024, 1024), workspace)
+            second = renderer(mutated, (1024, 1024), workspace)
+
+            prepare_reference(case / "source.png", case / "draft.json", workspace / "reference")
+            map_path = workspace / "reference" / "reconstruction-map-r01.json"
+            mutated_path = workspace / "mutated.svg"
+            mutated_path.write_bytes(mutated.xml_bytes)
+            original_capture: dict[str, object] = {}
+            mutated_capture: dict[str, object] = {}
+            with mock.patch.object(pipeline_module, "_utc_now", return_value=FIXED_TIME):
+                evaluate_candidate(
+                    map_path,
+                    case / "candidate.svg",
+                    0,
+                    workspace / "original-run",
+                    renderer=renderer,
+                    diagnostic_renderer=_derived_diagnostics(renderer, original_capture),
+                )
+                evaluate_candidate(
+                    map_path,
+                    mutated_path,
+                    0,
+                    workspace / "mutated-run",
+                    renderer=renderer,
+                    diagnostic_renderer=_derived_diagnostics(renderer, mutated_capture),
+                )
+            original_report = _read_json(workspace / "original-run" / "evaluation-i00.json")[
+                "report"
+            ]
+            mutated_report = _read_json(workspace / "mutated-run" / "evaluation-i00.json")["report"]
+
+        self.assertNotEqual(first.sha256, second.sha256)
+        self.assertNotEqual(first.png_bytes, second.png_bytes)
+        self.assertNotEqual(original_capture["hashes"], mutated_capture["hashes"])
+        original_metrics = original_report["metrics"]
+        mutated_metrics = mutated_report["metrics"]
+        self.assertNotEqual(original_metrics["silhouette_raw"], mutated_metrics["silhouette_raw"])
+        self.assertNotEqual(original_metrics["contour_raw"], mutated_metrics["contour_raw"])
+        expected = _golden()["pipeline_cases"]["analytic-fill"]["metrics"]
+        tolerance = float(_golden()["tolerance"])
+        self.assertTrue(
+            any(
+                abs(float(mutated_metrics[f"{name}_raw"]) - float(value)) > tolerance
+                for name, value in expected.items()
+            )
+        )
+
+    def test_every_pipeline_golden_has_the_exact_automatic_gate_catalog(self) -> None:
+        expected_ids = set(AUTOMATIC_GATE_IDS)
+        for name, expected in _golden()["pipeline_cases"].items():
+            with self.subTest(case=name):
+                gates = expected["gates"]
+                self.assertEqual(len(gates), len(AUTOMATIC_GATE_IDS))
+                self.assertEqual(set(gates), expected_ids)
+
     def test_every_evaluation_is_repeatable_and_matches_independent_goldens(self) -> None:
         manifest = _read_json(CONFORMANCE / "manifest.json")
         golden = _golden()
@@ -503,39 +772,52 @@ class PipelineCorpusTests(unittest.TestCase):
             with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 reference_output = root / "reference"
-                calls: list[tuple[int, int]] = []
-                candidate_mask = _mask(case / "candidate-mask.png")
-                renderer = _renderer_double(candidate_mask, calls)
+                calls: list[tuple[str, tuple[int, int], str]] = []
+                renderer = _renderer_contract(calls)
                 draft = _read_json(case / "draft.json")
                 components = draft["components"]
                 component_ids = [str(item["component_id"]) for item in components]
-                diagnostics = _diagnostics_double(case, component_ids)
 
                 with mock.patch.object(pipeline_module, "_utc_now", return_value=FIXED_TIME):
                     prepare_reference(case / "source.png", case / "draft.json", reference_output)
                     map_path = reference_output / "reconstruction-map-r01.json"
                     reports: dict[str, list[dict[str, object]]] = {"run-a": [], "run-b": []}
+                    diagnostic_captures: dict[str, list[dict[str, object]]] = {
+                        "run-a": [],
+                        "run-b": [],
+                    }
                     for run_name in reports:
                         run_dir = root / run_name
                         for iteration in range(int(case_record["iterations"])):
+                            diagnostic_capture: dict[str, object] = {}
                             summary = evaluate_candidate(
                                 map_path,
                                 case / "candidate.svg",
                                 iteration,
                                 run_dir,
                                 renderer=renderer,
-                                diagnostic_renderer=diagnostics,
+                                diagnostic_renderer=_derived_diagnostics(
+                                    renderer, diagnostic_capture
+                                ),
                             )
                             evaluation = _read_json(run_dir / f"evaluation-i{iteration:02d}.json")
                             report = evaluation["report"]
                             reports[run_name].append(report)
+                            diagnostic_captures[run_name].append(diagnostic_capture)
                             self.assertEqual(summary["status"], report["status"])
 
-                self.assertEqual(len(calls), 2 * int(case_record["iterations"]))
+                self.assertEqual(
+                    len(calls),
+                    2 * int(case_record["iterations"]) * (1 + 2 * len(component_ids)),
+                )
                 for iteration in range(int(case_record["iterations"])):
                     first = reports["run-a"][iteration]
                     second = reports["run-b"][iteration]
                     self.assertEqual(_normalized_bytes(first), _normalized_bytes(second))
+                    self.assertEqual(
+                        diagnostic_captures["run-a"][iteration]["hashes"],
+                        diagnostic_captures["run-b"][iteration]["hashes"],
+                    )
                     for image_name in ("preview", "overlay", "diff"):
                         first_hash = hashlib.sha256(
                             (root / "run-a" / f"{image_name}-i{iteration:02d}.png").read_bytes()
@@ -546,22 +828,21 @@ class PipelineCorpusTests(unittest.TestCase):
                         self.assertEqual(first_hash, second_hash)
 
                 reference, uncertainty = _source_normalization(case / "source.png")
+                size = (
+                    int(draft["canonical_canvas"]["raster_width"]),
+                    int(draft["canonical_canvas"]["raster_height"]),
+                )
+                candidate_mask = _alpha_mask(
+                    (root / "run-a" / f"preview-i{int(case_record['iterations']) - 1:02d}.png").read_bytes(),
+                    size,
+                )
                 reference_components = {
                     component_id: _mask(case / "masks" / f"{component_id}.png")
                     for component_id in component_ids
                 }
-                visible = {
-                    component_id: _mask(
-                        case / "candidate-components" / f"{component_id}-visible.png"
-                    )
-                    for component_id in component_ids
-                }
-                isolated = {
-                    component_id: _mask(
-                        case / "candidate-components" / f"{component_id}-isolated.png"
-                    )
-                    for component_id in component_ids
-                }
+                final_capture = diagnostic_captures["run-a"][-1]
+                visible = final_capture["visible"]
+                isolated = final_capture["isolated"]
                 independent = _reference_metrics(
                     reference,
                     candidate_mask,
@@ -584,9 +865,25 @@ class PipelineCorpusTests(unittest.TestCase):
                     self.assertLessEqual(abs(float(report_metrics[raw_name]) - expected_value), tolerance)
                 self.assertEqual(final_report["status"], expected["status"])
                 self.assertEqual(final_report["limit_state"], expected["limit_state"])
-                states = {item["gate_id"]: item["state"] for item in final_report["gates"]}
-                for gate_id, state in expected["gates"].items():
-                    self.assertEqual(states[gate_id], state)
+                automatic_gates = [
+                    item for item in final_report["gates"] if item["kind"] == "automatic"
+                ]
+                self.assertEqual(len(automatic_gates), len(AUTOMATIC_GATE_IDS))
+                self.assertEqual(
+                    [item["gate_id"] for item in automatic_gates], list(AUTOMATIC_GATE_IDS)
+                )
+                states = {item["gate_id"]: item["state"] for item in automatic_gates}
+                self.assertEqual(states, expected["gates"])
+                semantic_gates = [
+                    item for item in final_report["gates"] if item["kind"] == "semantic"
+                ]
+                self.assertEqual(
+                    [item["gate_id"] for item in semantic_gates], list(SEMANTIC_GATE_IDS)
+                )
+                self.assertEqual(
+                    {item["gate_id"]: item["state"] for item in semantic_gates},
+                    golden["semantic_gate_defaults"],
+                )
 
                 if name == "missing-component":
                     self.assertGreater(float(report_metrics["silhouette_raw"]), 99.9)

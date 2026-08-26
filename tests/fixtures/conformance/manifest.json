@@ -89,5 +89,5 @@
     }
   ],
   "provenance": "synthetic-original",
-  "renderer_mode": "deterministic-test-contract-double"
+  "renderer_mode": "pinned-node22-resvg-wasm-2.6.2-test-contract"
 }

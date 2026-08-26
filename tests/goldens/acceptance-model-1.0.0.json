@@ -81,7 +81,15 @@
     },
     "missing-component": {
       "gates": {
-        "auto.components.present": "fail"
+        "auto.components.present": "fail",
+        "auto.integrity.hashes": "pass",
+        "auto.paths.integrity": "fail",
+        "auto.primitives.constraints": "fail",
+        "auto.style.monochrome": "fail",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
       },
       "identity": false,
       "limit_state": "active",
@@ -97,9 +105,14 @@
     "multicolor-rejection": {
       "gates": {
         "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
+        "auto.paths.integrity": "fail",
+        "auto.primitives.constraints": "pass",
         "auto.style.monochrome": "fail",
         "auto.svg.render": "pass",
-        "auto.svg.safe_subset": "pass"
+        "auto.svg.safe_subset": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
       },
       "identity": true,
       "limit_state": "active",
@@ -115,8 +128,12 @@
     "noisy-antialias": {
       "gates": {
         "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
         "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
         "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
         "auto.topology.facts": "pass",
         "auto.viewport.geometry": "pass"
       },
@@ -134,8 +151,12 @@
     "occlusion-overlap": {
       "gates": {
         "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
         "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
         "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
         "auto.topology.facts": "pass",
         "auto.viewport.geometry": "pass"
       },
@@ -153,19 +174,22 @@
     "open-stroke": {
       "gates": {
         "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
         "auto.paths.integrity": "pass",
         "auto.primitives.constraints": "pass",
         "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
         "auto.topology.facts": "pass",
         "auto.viewport.geometry": "pass"
       },
-      "identity": true,
+      "identity": false,
       "limit_state": "active",
       "metrics": {
-        "composite": 100.000000,
-        "contour": 100.000000,
-        "layout": 100.000000,
-        "silhouette": 100.000000,
+        "composite": 99.903053,
+        "contour": 99.990800,
+        "layout": 99.399809,
+        "silhouette": 99.990759,
         "topology": 100.000000
       },
       "status": "incomplete"
@@ -173,27 +197,35 @@
     "organic-curve": {
       "gates": {
         "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
         "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
         "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
         "auto.topology.facts": "pass",
         "auto.viewport.geometry": "pass"
       },
-      "identity": true,
+      "identity": false,
       "limit_state": "active",
       "metrics": {
-        "composite": 100.000000,
-        "contour": 100.000000,
-        "layout": 100.000000,
-        "silhouette": 100.000000,
+        "composite": 79.229094,
+        "contour": 47.972645,
+        "layout": 83.315568,
+        "silhouette": 94.088812,
         "topology": 100.000000
       },
-      "status": "incomplete"
+      "status": "not_accepted"
     },
     "ring-hole": {
       "gates": {
         "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
         "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
         "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
         "auto.topology.facts": "pass",
         "auto.viewport.geometry": "pass"
       },
@@ -211,8 +243,12 @@
     "widescreen-16x9": {
       "gates": {
         "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
         "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
         "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
         "auto.topology.facts": "pass",
         "auto.viewport.geometry": "pass"
       },
@@ -227,6 +263,15 @@
       },
       "status": "incomplete"
     }
+  },
+  "semantic_gate_defaults": {
+    "semantic.ambiguities": "not_evaluated",
+    "semantic.components.complete": "not_evaluated",
+    "semantic.connectivity": "not_evaluated",
+    "semantic.editability": "not_evaluated",
+    "semantic.overlay_diff": "not_evaluated",
+    "semantic.target_sizes": "not_evaluated",
+    "semantic.visual_meaning": "not_evaluated"
   },
   "tolerance": 0.01
 }

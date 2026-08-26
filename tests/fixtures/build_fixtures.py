@@ -201,10 +201,7 @@ def _write_case(
     name: str,
     *,
     source_luma: np.ndarray,
-    candidate_mask: np.ndarray,
     reference_components: dict[str, np.ndarray],
-    candidate_visible: dict[str, np.ndarray] | None = None,
-    candidate_isolated: dict[str, np.ndarray] | None = None,
     svg: str,
     components: list[dict[str, object]],
     ratio: str = "1:1",
@@ -218,20 +215,8 @@ def _write_case(
     case = root / "conformance" / name
     source = case / "source.png"
     _png(source, source_luma)
-    _png(case / "candidate-mask.png", _luma(candidate_mask))
-    visible = candidate_visible or reference_components
-    isolated = candidate_isolated or visible
     for component_id, mask in reference_components.items():
         _png(case / "masks" / f"{component_id}.png", _luma(mask))
-    for component_id in reference_components:
-        _png(
-            case / "candidate-components" / f"{component_id}-visible.png",
-            _luma(visible[component_id]),
-        )
-        _png(
-            case / "candidate-components" / f"{component_id}-isolated.png",
-            _luma(isolated[component_id]),
-        )
     (case / "candidate.svg").write_text(svg + "\n", encoding="utf-8")
     height, width = source_luma.shape
     draft = _draft(
@@ -262,7 +247,6 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "analytic-fill",
             source_luma=_luma(rectangle),
-            candidate_mask=rectangle,
             reference_components={"mark": rectangle},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -279,7 +263,6 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "open-stroke",
             source_luma=_luma(stroke),
-            candidate_mask=stroke,
             reference_components={"stroke": stroke},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -307,7 +290,6 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "ring-hole",
             source_luma=_luma(combined_ring),
-            candidate_mask=combined_ring,
             reference_components={"ring": ring, "inner": inner},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -327,7 +309,6 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "organic-curve",
             source_luma=_luma(organic),
-            candidate_mask=organic,
             reference_components={"organic": organic},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -349,7 +330,6 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "noisy-antialias",
             source_luma=noisy,
-            candidate_mask=solid,
             reference_components={"mark": solid},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -367,7 +347,6 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "widescreen-16x9",
             source_luma=_luma(landscape),
-            candidate_mask=landscape,
             reference_components={"mark": landscape},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 36">'
@@ -380,15 +359,12 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
         )
     )
 
-    shifted = _rect(square, (272, 256, 784, 768))
     cases.append(
         _write_case(
             root,
             "impossible-target",
             source_luma=_luma(rectangle),
-            candidate_mask=shifted,
             reference_components={"mark": rectangle},
-            candidate_visible={"mark": shifted},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
                 '<rect id="mark" x="17" y="16" width="32" height="32" '
@@ -405,7 +381,6 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "multicolor-rejection",
             source_luma=_luma(rectangle),
-            candidate_mask=rectangle,
             reference_components={"mark": rectangle},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -418,20 +393,16 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
 
     dot = _rect(square, (800, 800, 816, 816))
     reference_with_dot = rectangle | dot
-    empty = np.zeros(square, dtype=bool)
     cases.append(
         _write_case(
             root,
             "missing-component",
             source_luma=_luma(reference_with_dot),
-            candidate_mask=rectangle,
             reference_components={"mark": rectangle, "dot": dot},
-            candidate_visible={"mark": rectangle, "dot": empty},
-            candidate_isolated={"mark": rectangle, "dot": empty},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
                 '<rect id="mark" x="16" y="16" width="32" height="32" '
-                'fill="currentColor"/></svg>'
+                'fill="currentColor"/><g id="dot" fill="currentColor"/></svg>'
             ),
             components=[_component("mark"), _component("dot")],
         )
@@ -446,10 +417,7 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
             root,
             "occlusion-overlap",
             source_luma=_luma(overlap_source),
-            candidate_mask=overlap_source,
             reference_components={"lower": lower_visible, "upper": upper},
-            candidate_visible={"lower": lower_visible, "upper": upper},
-            candidate_isolated={"lower": lower_full, "upper": upper},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
                 '<rect id="lower" x="12" y="16" width="28" height="28" fill="currentColor"/>'
@@ -588,7 +556,7 @@ def build(root: Path) -> None:
         {
             "corpus_version": "1.0.0",
             "provenance": "synthetic-original",
-            "renderer_mode": "deterministic-test-contract-double",
+            "renderer_mode": "pinned-node22-resvg-wasm-2.6.2-test-contract",
             "fixture_classes": [
                 "analytic-fill",
                 "open-stroke-caps-joins",

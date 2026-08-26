@@ -74,6 +74,8 @@ _NUMBER_TEXT = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
 _NUMBER = re.compile(rf"\A{_NUMBER_TEXT}\Z", re.ASCII)
 _NUMBER_LIST = re.compile(rf"\A\s*{_NUMBER_TEXT}(?:[\s,]+{_NUMBER_TEXT})*\s*\Z", re.ASCII)
 _PATH_CHARACTERS = re.compile(r"\A[MmZzLlHhVvCcSsQqTtAaEe0-9.,+\-\s]*\Z", re.ASCII)
+_PATH_TOKEN = re.compile(rf"[MmZzLlHhVvCcSsQqTtAa]|{_NUMBER_TEXT}", re.ASCII)
+_PATH_ARITY = {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6, "S": 4, "Q": 4, "T": 2, "A": 7}
 _ID = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.:-]*\Z", re.ASCII)
 _ID_REFERENCES = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.:-]*(?:\s+[A-Za-z_][A-Za-z0-9_.:-]*)*\Z", re.ASCII)
 _LANGUAGE = re.compile(r"\A[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*\Z", re.ASCII)
@@ -213,6 +215,91 @@ def _validate_presentation(name: str, value: str) -> None:
             raise SecurityViolation("paint order is not allowed")
 
 
+def _path_tokens(value: str) -> list[tuple[str, bool]]:
+    tokens: list[tuple[str, bool]] = []
+    position = 0
+    previous_was_number = False
+    for match in _PATH_TOKEN.finditer(value):
+        gap = value[position : match.start()]
+        if any(character not in " \t\r\n," for character in gap):
+            raise SecurityViolation("path data contains an unsupported command or token")
+        token = match.group(0)
+        is_command = len(token) == 1 and token.isalpha()
+        if "," in gap:
+            if gap.count(",") != 1 or not previous_was_number or is_command:
+                raise SecurityViolation("path data contains a misplaced comma")
+        tokens.append((token, is_command))
+        previous_was_number = not is_command
+        position = match.end()
+    remainder = value[position:]
+    if any(character not in " \t\r\n" for character in remainder):
+        raise SecurityViolation("path data was not consumed completely")
+    return tokens
+
+
+def _validate_path_grammar(value: str) -> None:
+    tokens = _path_tokens(value)
+    if not tokens or not tokens[0][1] or tokens[0][0] not in {"M", "m"}:
+        raise SecurityViolation("path data must begin with a move command")
+    index = 0
+    current_command: str | None = None
+    while index < len(tokens):
+        token, is_command = tokens[index]
+        if is_command:
+            current_command = token
+            index += 1
+            if token in {"Z", "z"}:
+                current_command = None
+                continue
+        if current_command is None:
+            raise SecurityViolation("path data has parameters without a command")
+        arity = _PATH_ARITY[current_command.upper()]
+        groups = 0
+        while index < len(tokens) and not tokens[index][1]:
+            if index + arity > len(tokens) or any(is_group_command for _, is_group_command in tokens[index : index + arity]):
+                raise SecurityViolation("path command has an incomplete parameter group")
+            group = tokens[index : index + arity]
+            for number, _ in group:
+                parsed = float(number)
+                if not math.isfinite(parsed):
+                    raise SecurityViolation("path parameters must be finite")
+            if current_command.upper() == "A" and (group[3][0] not in {"0", "1"} or group[4][0] not in {"0", "1"}):
+                raise SecurityViolation("arc flags must be the literal 0 or 1")
+            groups += 1
+            index += arity
+        if groups == 0:
+            raise SecurityViolation("path command requires parameters")
+
+
+def _validate_path_geometry(value: str) -> None:
+    _validate_path_grammar(value)
+    try:
+        parsed_path = parse_path(value)
+    except Exception as error:
+        raise SecurityViolation("path data is malformed") from error
+    if not parsed_path:
+        raise SecurityViolation("path data must contain drawable geometry")
+    for segment in parsed_path:
+        defining_points = [segment.start, segment.end]
+        for attribute in ("control", "control1", "control2"):
+            point = getattr(segment, attribute, None)
+            if point is not None:
+                defining_points.append(point)
+        numeric_values: list[float] = []
+        for point in defining_points:
+            numeric_values.extend((float(point.real), float(point.imag)))
+        radius = getattr(segment, "radius", None)
+        if radius is not None:
+            numeric_values.extend((float(radius.real), float(radius.imag)))
+        rotation = getattr(segment, "rotation", None)
+        if rotation is not None:
+            numeric_values.append(float(rotation))
+        if not all(math.isfinite(number) for number in numeric_values):
+            raise SecurityViolation("parsed path geometry must be finite")
+        if all(point == defining_points[0] for point in defining_points[1:]):
+            raise SecurityViolation("path data contains a zero-length segment")
+
+
 def _validate_attribute(element: str, name: str, value: str) -> None:
     if name.lower().startswith("on") or name in {"style", "transform", "href", "xlink:href"}:
         raise SecurityViolation("active, linked, styled, and transformed content is forbidden")
@@ -257,10 +344,7 @@ def _validate_attribute(element: str, name: str, value: str) -> None:
     elif name == "d":
         if not value.strip() or not _PATH_CHARACTERS.fullmatch(value):
             raise SecurityViolation("path data contains forbidden characters")
-        try:
-            parse_path(value)
-        except (ValueError, TypeError, IndexError) as error:
-            raise SecurityViolation("path data is malformed") from error
+        _validate_path_geometry(value)
     elif name == "points":
         values = _number_sequence(value)
         minimum = 6 if element == "polygon" else 4
@@ -292,11 +376,11 @@ def _validate_tree(root: Element) -> tuple[int, int]:
         if node.tail and node.tail.strip():
             raise SecurityViolation("visible tail text is forbidden")
         for attribute, value in node.attrib.items():
-            _validate_attribute(element, attribute, value)
             if attribute in {"d", "points"}:
                 path_characters += len(value)
                 if path_characters > MAX_PATH_DATA_CHARACTERS:
                     raise SecurityViolation("path and points data exceed 2000000 characters")
+            _validate_attribute(element, attribute, value)
         stack.extend((child, depth + 1) for child in reversed(children))
     return element_count, path_characters
 

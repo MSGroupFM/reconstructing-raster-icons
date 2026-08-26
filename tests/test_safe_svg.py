@@ -92,6 +92,28 @@ class SafeSvgTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assert_rejected(payload)
 
+    def test_rejects_malformed_or_nonfinite_path_data(self) -> None:
+        path_values = {
+            "non-finite exponent": "M1e999 0 L 1 1",
+            "invalid arc flag": "M0 0 A 1 1 0 2 0 2 2",
+            "stray exponent marker": "M0 0 E 1 1",
+            "move only": "M0 0",
+            "zero-length line": "M0 0 L0 0",
+        }
+        for name, path_data in path_values.items():
+            with self.subTest(name=name):
+                self.assert_rejected(
+                    f'<svg xmlns="http://www.w3.org/2000/svg"><path d="{path_data}"/></svg>'
+                )
+
+    def test_accepts_finite_path_exponent_syntax(self) -> None:
+        path = self.write_svg(
+            '<svg xmlns="http://www.w3.org/2000/svg">'
+            '<path d="M1e2 1e-2 L2E2 -3e+1"/></svg>'
+        )
+        document = validate_svg(path)
+        self.assertEqual(document.path_data_characters, len("M1e2 1e-2 L2E2 -3e+1"))
+
     def test_rejects_more_than_ten_thousand_elements(self) -> None:
         payload = '<svg xmlns="http://www.w3.org/2000/svg">' + ("<g/>" * 10_000) + "</svg>"
         self.assert_rejected(payload)

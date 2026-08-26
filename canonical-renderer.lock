@@ -7,6 +7,8 @@
   "package_integrity": "sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw==",
   "loader_file": "node_modules/@resvg/resvg-wasm/index.mjs",
   "loader_sha256": "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1",
+  "runner_file": "scripts/render_svg.mjs",
+  "runner_sha256": "12c6d7f3d44702be7070913097dcb138959a9511f99c20dc51710f5b272525da",
   "wasm_file": "node_modules/@resvg/resvg-wasm/index_bg.wasm",
   "wasm_sha256": "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70",
   "license": "MPL-2.0",

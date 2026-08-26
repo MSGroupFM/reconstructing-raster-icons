@@ -8,6 +8,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 import sys
 from unittest import mock
@@ -367,6 +368,113 @@ class EvaluateCandidateTests(unittest.TestCase):
                 item
                 for item in evaluation["report"]["gates"]
                 if item["gate_id"] == "auto.primitives.constraints"
+            )
+
+            self.assertEqual(gate["state"], "fail")
+
+    def test_fill_component_rejects_stroke_only_candidate_style(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            candidate.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                '<path id="mark" d="M16 16 L48 16 L48 48 L32.05 48 '
+                'L32 60 L31.95 48 L16 48 Z" '
+                'fill="none" stroke="currentColor" stroke-width="1"/>'
+                "</svg>"
+            )
+
+            summary = evaluate_candidate(
+                map_path,
+                candidate,
+                0,
+                root / "run",
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+            gate = next(
+                item for item in evaluation["report"]["gates"]
+                if item["gate_id"] == "auto.style.monochrome"
+            )
+
+            self.assertEqual(gate["state"], "fail")
+            self.assertNotEqual(summary["status"], "accepted")
+
+    def test_narrow_spike_fails_path_integrity_even_with_canonical_render(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            candidate.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                '<path id="mark" d="M16 16 L48 16 L48 48 L32.05 48 '
+                'L32 60 L31.95 48 L16 48 Z" fill="currentColor"/>'
+                "</svg>"
+            )
+
+            evaluate_candidate(
+                map_path,
+                candidate,
+                0,
+                root / "run",
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+            gate = next(
+                item for item in evaluation["report"]["gates"]
+                if item["gate_id"] == "auto.paths.integrity"
+            )
+
+            self.assertEqual(gate["state"], "fail")
+
+    def test_viewport_gate_rejects_stretch_geometry_for_contain_map(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            candidate.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" '
+                'preserveAspectRatio="none">'
+                '<rect id="mark" x="16" y="16" width="32" height="32" fill="currentColor"/>'
+                "</svg>"
+            )
+
+            evaluate_candidate(
+                map_path,
+                candidate,
+                0,
+                root / "run",
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+            gate = next(
+                item for item in evaluation["report"]["gates"]
+                if item["gate_id"] == "auto.viewport.geometry"
+            )
+
+            self.assertEqual(gate["state"], "fail")
+
+    def test_integrity_gate_rejects_map_not_bound_to_frozen_stage_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            frozen = json.loads(map_path.read_text())
+            frozen["source_sha256"] = "0" * 64
+            map_path.write_text(json.dumps(frozen))
+
+            evaluate_candidate(
+                map_path,
+                candidate,
+                0,
+                root / "run",
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+            gate = next(
+                item for item in evaluation["report"]["gates"]
+                if item["gate_id"] == "auto.integrity.hashes"
             )
 
             self.assertEqual(gate["state"], "fail")
@@ -732,6 +840,182 @@ class FinalizeReviewTests(unittest.TestCase):
                 else:
                     self.assertEqual(item["retention"], "retained")
                     self.assertTrue(item["recorded_at"].endswith("Z"))
+
+    def test_finalizing_earlier_best_catalogs_later_published_iterations_before_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_evaluation = self._evaluation(root)
+            run_dir = first_evaluation.parent
+            evaluate_candidate(
+                root / "reference" / "reconstruction-map-r01.json",
+                root / "candidate.svg",
+                1,
+                run_dir,
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            review = self._review(root)
+            output = root / "acceptance-report.json"
+
+            finalize_review(first_evaluation, review, output)
+            report = json.loads(output.read_text())
+            cleanup = json.loads((root / "cleanup-report.json").read_text())
+            report_ids = {item["logical_id"] for item in report["artifacts"]}
+            cleanup_ids = {item["logical_id"] for item in cleanup["artifacts"]}
+            later_ids = {
+                f"{kind}-i01"
+                for kind in (
+                    "map-snapshot",
+                    "candidate",
+                    "preview",
+                    "overlay",
+                    "diff",
+                    "diagnostics",
+                    "evaluation",
+                )
+            }
+
+            self.assertTrue(later_ids.issubset(report_ids))
+            self.assertTrue(later_ids.issubset(cleanup_ids))
+            self.assertEqual(report["iteration"], 0)
+
+    def test_cleanup_sidecar_failure_restores_workspace_and_allows_same_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            run_dir = evaluation.parent
+            review = self._review(root)
+            output = root / "acceptance-report.json"
+            real_write = pipeline_module.atomic_write_json
+            failed = False
+
+            def fail_cleanup_once(path, document):
+                nonlocal failed
+                if Path(path).name == "cleanup-report.json" and not failed:
+                    failed = True
+                    raise OSError("cleanup sidecar publication interrupted")
+                return real_write(path, document)
+
+            with mock.patch.object(
+                pipeline_module, "atomic_write_json", side_effect=fail_cleanup_once
+            ):
+                with self.assertRaises(OSError):
+                    finalize_review(evaluation, review, output)
+
+            self.assertTrue(run_dir.is_dir())
+            self.assertTrue(evaluation.is_file())
+            self.assertFalse(output.exists())
+            self.assertFalse((root / "cleanup-report.json").exists())
+
+            summary = finalize_review(evaluation, review, output)
+            self.assertEqual(summary["exit_code"], ExitCode.ACCEPTED)
+            self.assertTrue(output.is_file())
+            self.assertTrue((root / "cleanup-report.json").is_file())
+
+    def test_concurrent_different_outputs_allow_exactly_one_coherent_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            run_dir = evaluation.parent
+            review = self._review(root)
+            outputs = (
+                root / "first" / "acceptance-report.json",
+                root / "second" / "acceptance-report.json",
+            )
+            start = threading.Barrier(2)
+            cleanup_barrier = threading.Barrier(2)
+            outcomes: list[object] = []
+            real_rmtree = pipeline_module.shutil.rmtree
+
+            def synchronized_cleanup(path, *args, **kwargs):
+                if Path(path) == run_dir:
+                    try:
+                        cleanup_barrier.wait(timeout=0.5)
+                    except threading.BrokenBarrierError:
+                        pass
+                return real_rmtree(path, *args, **kwargs)
+
+            def worker(output: Path) -> None:
+                start.wait()
+                try:
+                    outcomes.append(finalize_review(evaluation, review, output))
+                except Exception as error:
+                    outcomes.append(error)
+
+            with mock.patch.object(
+                pipeline_module.shutil, "rmtree", side_effect=synchronized_cleanup
+            ):
+                threads = [threading.Thread(target=worker, args=(output,)) for output in outputs]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=10)
+
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(sum(isinstance(item, dict) for item in outcomes), 1)
+            self.assertEqual(sum(output.is_file() for output in outputs), 1)
+            coherent = [
+                output for output in outputs
+                if output.is_file() and (output.parent / "cleanup-report.json").is_file()
+            ]
+            self.assertEqual(len(coherent), 1)
+
+    def test_semantic_evidence_rejects_unknown_artifact_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            review = self._review(root)
+            semantic = json.loads(review.read_text())
+            semantic["gates"][0]["evidence"] = {
+                "artifact_id": "does-not-exist",
+                "sha256": "0" * 64,
+            }
+            review.write_text(json.dumps(semantic))
+
+            with self.assertRaises(InvalidInputError):
+                finalize_review(evaluation, review, root / "acceptance-report.json")
+
+            self.assertTrue(evaluation.parent.is_dir())
+
+    def test_semantic_evidence_rejects_mismatched_artifact_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            review = self._review(root)
+            semantic = json.loads(review.read_text())
+            semantic["gates"][0]["evidence"] = {
+                "artifact_id": "candidate-i00",
+                "sha256": "0" * 64,
+            }
+            review.write_text(json.dumps(semantic))
+
+            with self.assertRaises(InvalidInputError):
+                finalize_review(evaluation, review, root / "acceptance-report.json")
+
+            self.assertTrue(evaluation.parent.is_dir())
+
+    def test_semantic_evidence_rejects_conflicting_duplicate_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            evaluated = json.loads(evaluation.read_text())
+            candidate_hash = evaluated["report"]["hashes"]["candidate"]
+            review = self._review(root)
+            semantic = json.loads(review.read_text())
+            semantic["gates"][0]["evidence"] = {
+                "artifact_id": "candidate-i00",
+                "sha256": candidate_hash,
+            }
+            semantic["gates"][1]["evidence"] = {
+                "artifact_id": "candidate-i00",
+                "sha256": "0" * 64,
+            }
+            review.write_text(json.dumps(semantic))
+
+            with self.assertRaises(InvalidInputError):
+                finalize_review(evaluation, review, root / "acceptance-report.json")
+
+            self.assertTrue(evaluation.parent.is_dir())
 
     def test_final_report_publish_failure_preserves_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

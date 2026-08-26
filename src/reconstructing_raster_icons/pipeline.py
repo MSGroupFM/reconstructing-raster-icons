@@ -754,6 +754,209 @@ def _monochrome(document: SafeSvgDocument) -> bool:
     return len(colors) <= 1
 
 
+def _candidate_style_matches(
+    document: SafeSvgDocument,
+    components: Sequence[Mapping[str, object]],
+    constraints: Mapping[str, object],
+    geometry: Mapping[str, Mapping[str, object]],
+    delta: float,
+) -> bool:
+    """Validate declared fill/stroke semantics and the single canonical foreground."""
+    by_id = {element.attrib.get("id"): element for element in document.root.iter()}
+    allowed_foreground = {"currentcolor", "#000000", "#000", "black"}
+    stroke_constraints = {
+        str(item["component_id"]): item for item in constraints.get("strokes", [])
+    }
+
+    def paints(root: ElementTree.Element) -> tuple[bool, bool, bool]:
+        has_fill = False
+        has_stroke = False
+        allowed = True
+
+        def walk(
+            element: ElementTree.Element,
+            inherited_fill: str,
+            inherited_stroke: str,
+        ) -> None:
+            nonlocal has_fill, has_stroke, allowed
+            fill = element.attrib.get("fill", inherited_fill).lower()
+            stroke = element.attrib.get("stroke", inherited_stroke).lower()
+            name = _local_name(element.tag)
+            if name not in {"g", "title", "desc"}:
+                if fill != "none":
+                    has_fill = True
+                    allowed = allowed and fill in allowed_foreground
+                if stroke != "none":
+                    has_stroke = True
+                    allowed = allowed and stroke in allowed_foreground
+            for child in element:
+                walk(child, fill, stroke)
+
+        walk(root, "black", "none")
+        return has_fill, has_stroke, allowed
+
+    for component in components:
+        component_id = str(component["component_id"])
+        element = by_id.get(str(component["svg_id"]))
+        details = geometry.get(component_id)
+        if element is None or details is None:
+            return False
+        has_fill, has_stroke, allowed = paints(element)
+        expected = str(component["paint_type"])
+        if not allowed or (has_fill, has_stroke) != {
+            "fill": (True, False),
+            "stroke": (False, True),
+            "mixed": (True, True),
+        }[expected]:
+            return False
+        if has_stroke:
+            constraint = stroke_constraints.get(component_id)
+            if constraint is None:
+                return False
+            width_ok = abs(
+                float(details["stroke_width"]) - float(constraint["expected_width"])
+            ) <= delta
+            if (
+                not width_ok
+                or details["cap"] != constraint["cap"]
+                or details["join"] != constraint["join"]
+            ):
+                return False
+    return True
+
+
+def _candidate_viewport_matches(
+    document: SafeSvgDocument,
+    viewport: Mapping[str, object],
+    size: tuple[int, int],
+    geometry: Mapping[str, Mapping[str, object]],
+) -> bool:
+    """Validate viewBox, preserveAspectRatio, canvas ratio, and clipping bounds."""
+    if not _viewbox_matches(document, viewport["view_box"]):  # type: ignore[arg-type]
+        return False
+    alignment = str(viewport["alignment"])
+    anchor = {
+        "center": "xMidYMid",
+        "top": "xMidYMin",
+        "bottom": "xMidYMax",
+        "left": "xMinYMid",
+        "right": "xMaxYMid",
+        "top-left": "xMinYMin",
+        "top-right": "xMaxYMin",
+        "bottom-left": "xMinYMax",
+        "bottom-right": "xMaxYMax",
+    }[alignment]
+    fit_mode = str(viewport["fit_mode"])
+    expected_aspect = "none" if fit_mode == "stretch" else f"{anchor} {'meet' if fit_mode == 'contain' else 'slice'}"
+    actual_aspect = " ".join(
+        document.root.attrib.get("preserveAspectRatio", "xMidYMid meet").split()
+    )
+    if actual_aspect != expected_aspect:
+        return False
+    try:
+        ratio_width, ratio_height = (int(item) for item in str(viewport["aspect_ratio"]).split(":"))
+    except (TypeError, ValueError):
+        return False
+    if canonical_size(Fraction(ratio_width, ratio_height)) != size:
+        return False
+    for component in geometry.values():
+        stroke_margin = max(0.0, float(component.get("stroke_width", 0.0)) / 2.0)
+        for x, y in component["points"]:  # type: ignore[assignment]
+            if not (-stroke_margin <= x <= size[0] + stroke_margin):
+                return False
+            if not (-stroke_margin <= y <= size[1] + stroke_margin):
+                return False
+    return True
+
+
+def _candidate_path_integrity(
+    geometry: Mapping[str, Mapping[str, object]],
+    measurements: Sequence[object],
+    delta: float,
+) -> tuple[bool, float, float]:
+    """Reject narrow spikes, degenerate/self-crossing geometry, and path constraints."""
+    worst = 0.0
+
+    def intersects(
+        first: tuple[tuple[float, float], tuple[float, float]],
+        second: tuple[tuple[float, float], tuple[float, float]],
+    ) -> bool:
+        def orientation(a, b, c) -> float:
+            return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+        a, b = first
+        c, d = second
+        values = orientation(a, b, c), orientation(a, b, d), orientation(c, d, a), orientation(c, d, b)
+        return values[0] * values[1] < 0.0 and values[2] * values[3] < 0.0
+
+    for component in geometry.values():
+        points = tuple((float(x), float(y)) for x, y in component["points"])  # type: ignore[assignment]
+        if len(points) < 2 or any(first == second for first, second in zip(points, points[1:])):
+            return False, delta + 1.0, delta
+        for previous, vertex, following in zip(points, points[1:], points[2:]):
+            base = math.dist(previous, following)
+            if base >= 2.0 * delta or base == 0.0:
+                continue
+            numerator = abs(
+                (following[0] - previous[0]) * (previous[1] - vertex[1])
+                - (previous[0] - vertex[0]) * (following[1] - previous[1])
+            )
+            altitude = numerator / base
+            worst = max(worst, altitude)
+            if altitude > delta:
+                return False, altitude, delta
+        segments = tuple(zip(points, points[1:]))
+        closed = points[0] == points[-1]
+        for first_index, first in enumerate(segments):
+            for second_index, second in enumerate(segments[first_index + 1 :], first_index + 1):
+                adjacent = second_index == first_index + 1 or (
+                    closed and first_index == 0 and second_index == len(segments) - 1
+                )
+                if not adjacent and intersects(first, second):
+                    return False, delta + 1.0, delta
+    for measurement in measurements:
+        if getattr(measurement, "constraint_kind", "") not in {"intersection", "gap"}:
+            continue
+        worst = max(worst, float(getattr(measurement, "measured_deviation", 0.0)))
+        if not bool(getattr(measurement, "passed", False)):
+            return False, worst, float(getattr(measurement, "tolerance", delta))
+    return True, worst, delta
+
+
+def _frozen_integrity_matches_stage_report(
+    map_source: Path,
+    frozen_map: Mapping[str, object],
+    map_hash: str,
+) -> bool:
+    """Bind every frozen map/mask logical ID and digest to its preparation report."""
+    try:
+        revision = _revision_suffix(frozen_map["map_revision"])
+        stage = _load_json(
+            map_source.parent / f"reference-stage-report-{revision}.json",
+            "reference stage report",
+        )
+        artifacts = stage.get("artifacts")
+        if stage.get("map_revision") != frozen_map["map_revision"] or not isinstance(artifacts, list):
+            return False
+        declared = {
+            str(item["logical_id"]): str(item["sha256"])
+            for item in artifacts
+            if isinstance(item, Mapping) and set(item) == {"logical_id", "sha256"}
+        }
+        required = {
+            f"reconstruction-map-{revision}": map_hash,
+            str(frozen_map["reference_mask"]["logical_id"]): str(frozen_map["reference_mask"]["sha256"]),  # type: ignore[index]
+            str(frozen_map["uncertainty_mask"]["logical_id"]): str(frozen_map["uncertainty_mask"]["sha256"]),  # type: ignore[index]
+            **{
+                str(component["reference_mask"]["logical_id"]): str(component["reference_mask"]["sha256"])
+                for component in frozen_map["components"]  # type: ignore[union-attr]
+            },
+        }
+        return len(declared) == len(artifacts) and declared == required
+    except (InvalidInputError, KeyError, TypeError, ValueError):
+        return False
+
+
 def _candidate_geometry(
     document: SafeSvgDocument,
     components: Sequence[Mapping[str, object]],
@@ -1090,22 +1293,28 @@ def _evaluate_candidate(
             uncertainty_record["sha256"],
             candidate_hash,
         )
-    )
-    viewport_ok = _viewbox_matches(document, frozen_map["viewport"]["view_box"])  # type: ignore[index]
-    style_ok = _monochrome(document)
+    ) and _frozen_integrity_matches_stage_report(map_source, frozen_map, map_hash)
     delta = max(1.0, math.floor(0.001 * math.hypot(*size) + 0.5))
     geometry_measured = 0.0
     geometry_tolerance = delta
     geometry_ok = False
+    path_ok = False
+    path_measured = delta + 1.0
+    path_tolerance = delta
+    candidate_geometry: dict[str, dict[str, object]] = {}
     if canonical:
         try:
+            candidate_geometry = _candidate_geometry(document, components, size, delta)
             geometry = evaluate_geometry_constraints(
-                _candidate_geometry(document, components, size, delta),
+                candidate_geometry,
                 frozen_map["geometry_constraints"],  # type: ignore[arg-type]
                 delta=delta,
                 canonical_canvas=(float(size[0]), float(size[1])),
             )
             geometry_ok = geometry.passed
+            path_ok, path_measured, path_tolerance = _candidate_path_integrity(
+                candidate_geometry, geometry.measurements, delta
+            )
             if geometry.measurements:
                 worst = max(
                     geometry.measurements,
@@ -1117,6 +1326,19 @@ def _evaluate_candidate(
         except (KeyError, TypeError, ValueError):
             geometry_measured = delta + 1.0
             geometry_tolerance = delta
+    viewport_ok = canonical and _candidate_viewport_matches(
+        document,
+        frozen_map["viewport"],  # type: ignore[arg-type]
+        size,
+        candidate_geometry,
+    )
+    style_ok = canonical and _candidate_style_matches(
+        document,
+        components,
+        frozen_map["geometry_constraints"],  # type: ignore[arg-type]
+        candidate_geometry,
+        delta,
+    )
     safe_hash = candidate_hash
     automatic_gates = [
         _artifact_gate("auto.svg.safe_subset", True, f"candidate-{suffix}", safe_hash, timestamp),
@@ -1138,7 +1360,13 @@ def _evaluate_candidate(
             geometry_tolerance,
             timestamp,
         ),
-        _measurement_gate("auto.paths.integrity", canonical, 0.0 if canonical else delta + 1.0, delta, timestamp),
+        _measurement_gate(
+            "auto.paths.integrity",
+            path_ok,
+            path_measured,
+            path_tolerance,
+            timestamp,
+        ),
         _artifact_gate("auto.style.monochrome", style_ok, f"candidate-{suffix}", candidate_hash, timestamp),
     ]
     if tuple(gate["gate_id"] for gate in automatic_gates) != AUTOMATIC_GATE_IDS:
@@ -1375,7 +1603,7 @@ def _iteration_artifact_catalog(
     evaluation_payload: bytes,
     evaluated: Mapping[str, object],
 ) -> tuple[list[dict[str, object]], frozenset[str]]:
-    """Collect every immutable evaluation artifact through the selected iteration."""
+    """Collect every contiguous immutable evaluation artifact in the run workspace."""
     selected_iteration = evaluated.get("iteration")
     if isinstance(selected_iteration, bool) or not isinstance(selected_iteration, int):
         raise InvalidInputError("evaluation iteration is malformed")
@@ -1389,11 +1617,25 @@ def _iteration_artifact_catalog(
     workspace = evaluation_path.parent
     catalog: dict[str, dict[str, object]] = {}
     cleanup_ids: set[str] = set()
+    published: dict[int, Path] = {}
+    for path in workspace.glob("evaluation-i*.json"):
+        match = re.fullmatch(r"evaluation-i([0-9]+)\.json", path.name)
+        if match is None:
+            continue
+        iteration = int(match.group(1))
+        if iteration in published:
+            raise InvalidInputError(f"duplicate published evaluation iteration {iteration}")
+        published[iteration] = path
+    if selected_iteration not in published:
+        raise InvalidInputError("selected evaluation is not published in its run workspace")
+    expected_iterations = set(range(max(published) + 1))
+    if set(published) != expected_iterations:
+        raise InvalidInputError("published evaluation iterations are not contiguous")
 
-    for iteration in range(selected_iteration + 1):
+    for iteration in sorted(published):
         suffix = _iteration_suffix(iteration)
         selected = iteration == selected_iteration
-        path = evaluation_path if selected else workspace / f"evaluation-{suffix}.json"
+        path = evaluation_path if selected else published[iteration]
         payload = evaluation_payload if selected else _snapshot_bytes(
             path, f"evaluation {suffix}", 20 * 1024 * 1024
         )
@@ -1451,7 +1693,37 @@ def _iteration_artifact_catalog(
     return [catalog[logical_id] for logical_id in sorted(catalog)], frozenset(cleanup_ids)
 
 
-def _finalize_review(
+def _validate_semantic_artifact_bindings(
+    semantic_gates: Sequence[Mapping[str, object]],
+    artifacts: Sequence[Mapping[str, object]],
+) -> None:
+    """Require semantic artifact evidence to bind the pre-cleanup catalog exactly."""
+    catalog = {str(item["logical_id"]): str(item["sha256"]) for item in artifacts}
+    bindings: dict[str, str] = {}
+    for gate in semantic_gates:
+        evidence = gate.get("evidence")
+        if not isinstance(evidence, Mapping) or "artifact_id" not in evidence:
+            continue
+        logical_id = str(evidence["artifact_id"])
+        digest = str(evidence["sha256"])
+        expected = catalog.get(logical_id)
+        if expected is None:
+            raise InvalidInputError(
+                f"semantic evidence references unknown artifact {logical_id}"
+            )
+        if digest != expected:
+            raise InvalidInputError(
+                f"semantic evidence hash does not match artifact {logical_id}"
+            )
+        prior = bindings.get(logical_id)
+        if prior is not None and prior != digest:
+            raise InvalidInputError(
+                f"semantic evidence has conflicting bindings for artifact {logical_id}"
+            )
+        bindings[logical_id] = digest
+
+
+def _finalize_review_transaction(
     evaluation: Path, semantic_review: Path, output: Path
 ) -> dict[str, object]:
     """Merge validated semantic evidence, resolve precedence, report, then inventory cleanup."""
@@ -1479,6 +1751,12 @@ def _finalize_review(
 
     automatic_gates = [gate for gate in base_report["gates"] if gate["kind"] == "automatic"]
     semantic_gates = review["gates"]
+    artifact_catalog, cleanup_ids = _iteration_artifact_catalog(
+        evaluation_path,
+        evaluation_payload,
+        evaluated,
+    )
+    _validate_semantic_artifact_bindings(semantic_gates, artifact_catalog)
     gates = automatic_gates + semantic_gates
     resolution = resolve_status(
         score=float(base_report["metrics"]["composite_raw"]),
@@ -1499,51 +1777,80 @@ def _finalize_review(
     )
     final_report["gates"] = gates
     final_report["warnings"] = list(final_report["warnings"]) + list(review["warnings"])
-    final_report["artifacts"], cleanup_ids = _iteration_artifact_catalog(
-        evaluation_path,
-        evaluation_payload,
-        evaluated,
-    )
+    final_report["artifacts"] = artifact_catalog
     validate_document(final_report, "acceptance-report")
     _ensure_logical_evidence(final_report)
 
     run_workspace = evaluation_path.parent
-    atomic_write_json(output_path, final_report)
-    cleanup_started = _utc_now()
+    resolved_workspace = run_workspace.resolve()
+    if resolved_workspace == resolved_workspace.parent or resolved_workspace == Path("/"):
+        raise InvalidInputError("refusing unsafe run workspace cleanup")
+    backup = Path(
+        tempfile.mkdtemp(
+            prefix=f".{run_workspace.name}.finalize-backup.",
+            dir=run_workspace.parent,
+        )
+    )
+    backup.rmdir()
+    try:
+        shutil.copytree(run_workspace, backup, symlinks=True, copy_function=os.link)
+    except Exception:
+        shutil.rmtree(backup, ignore_errors=True)
+        raise
     artifact_hashes = {
         str(item["logical_id"]): str(item["sha256"]) for item in final_report["artifacts"]
     }
-    deleted_at: str | None = None
-    if run_workspace.exists():
-        resolved_workspace = run_workspace.resolve()
-        if resolved_workspace == resolved_workspace.parent or resolved_workspace == Path("/"):
-            raise InvalidInputError("refusing unsafe run workspace cleanup")
+    workspace_cleanup_attempted = False
+    try:
+        atomic_write_json(output_path, final_report)
+        cleanup_started = _utc_now()
+        workspace_cleanup_attempted = True
         shutil.rmtree(run_workspace)
         deleted_at = _utc_now()
-    recorded_at = _utc_now()
-    cleanup_records = []
-    for logical_id in sorted(artifact_hashes):
-        record: dict[str, object] = {
-            "logical_id": logical_id,
-            "sha256": artifact_hashes[logical_id],
-        }
-        if logical_id in cleanup_ids and deleted_at is not None:
-            record.update({"retention": "deleted", "deleted_at": deleted_at})
-        else:
-            record.update({"retention": "retained", "recorded_at": recorded_at})
-        cleanup_records.append(record)
-    atomic_write_json(
-        cleanup_report_path,
-        {
-            "stage": "finalize_cleanup",
-            "stage_version": SCHEMA_VERSION,
-            "run_id": final_report["run_id"],
-            "started_at": cleanup_started,
-            "recorded_at": recorded_at,
-            "after_report": output_path.name,
-            "artifacts": cleanup_records,
-        },
-    )
+        recorded_at = _utc_now()
+        cleanup_records = []
+        for logical_id in sorted(artifact_hashes):
+            record: dict[str, object] = {
+                "logical_id": logical_id,
+                "sha256": artifact_hashes[logical_id],
+            }
+            if logical_id in cleanup_ids:
+                record.update({"retention": "deleted", "deleted_at": deleted_at})
+            else:
+                record.update({"retention": "retained", "recorded_at": recorded_at})
+            cleanup_records.append(record)
+        atomic_write_json(
+            cleanup_report_path,
+            {
+                "stage": "finalize_cleanup",
+                "stage_version": SCHEMA_VERSION,
+                "run_id": final_report["run_id"],
+                "started_at": cleanup_started,
+                "recorded_at": recorded_at,
+                "after_report": output_path.name,
+                "artifacts": cleanup_records,
+            },
+        )
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        cleanup_report_path.unlink(missing_ok=True)
+        if workspace_cleanup_attempted and backup.exists():
+            if run_workspace.exists():
+                partial = run_workspace.parent / (
+                    f".{run_workspace.name}.interrupted-{os.getpid()}"
+                )
+                if partial.exists():
+                    raise RuntimeError("finalization rollback destination already exists")
+                os.replace(run_workspace, partial)
+                os.replace(backup, run_workspace)
+                shutil.rmtree(partial, ignore_errors=True)
+            else:
+                os.replace(backup, run_workspace)
+        elif backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup, ignore_errors=True)
     return {
         "ok": resolution.exit_code == ExitCode.ACCEPTED,
         "stage": "finalize_review",
@@ -1552,6 +1859,26 @@ def _finalize_review(
         "score": final_report["metrics"]["composite"],
         "exit_code": int(resolution.exit_code),
     }
+
+
+def _finalize_review(
+    evaluation: Path, semantic_review: Path, output: Path
+) -> dict[str, object]:
+    """Serialize all finalization outputs for a run, including different destinations."""
+    evaluation_path = Path(evaluation)
+    run_workspace = evaluation_path.parent
+    lock_path = run_workspace.parent / f".{run_workspace.name}.finalize.lock"
+    try:
+        descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+    except FileExistsError as error:
+        raise FrozenArtifactError(
+            f"run finalization is already active: {lock_path.name}"
+        ) from error
+    try:
+        return _finalize_review_transaction(evaluation, semantic_review, output)
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 def write_failure_report(

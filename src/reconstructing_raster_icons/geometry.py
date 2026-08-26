@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 BoolMask = NDArray[np.bool_]
 Point = tuple[float, float]
 HAUSDORFF_DISTANCE_EVALUATION_BUDGET = 250_000_000
+TOPOLOGY_CLUSTER_COMPARISON_BUDGET_V1 = 1_000_000
 _INTERSECTION_RELATIVE_ULPS = 24.0
 
 
@@ -1007,6 +1008,34 @@ def _locations_close(first: _LocatedIntersection, second: _LocatedIntersection) 
     )
 
 
+def _topology_cluster_comparison_estimate(event_count: int) -> int:
+    """Return the exact complete-link worst-case comparison count for E events.
+
+    Event ``i`` can be tested against each of its ``i`` predecessors at most
+    once, so the total is ``sum(0..E-1) = E*(E-1)/2``. The V1 limit of one
+    million permits 1,414 canonical topology events (998,991 comparisons),
+    while rejecting 1,415 events (1,000,405 comparisons). It bounds only dense
+    topology work; for example, 100 one-segment paths at one junction produce
+    4,950 events and 12,248,775 worst-case comparisons. It is not a subpath,
+    segment, or visual-node limit.
+    """
+    if not isinstance(event_count, int) or isinstance(event_count, bool):
+        raise TypeError("topology event count must be an integer")
+    if event_count < 0:
+        raise ValueError("topology event count must be non-negative")
+    return event_count * (event_count - 1) // 2
+
+
+def _validate_topology_cluster_budget(event_count: int) -> None:
+    estimated_comparisons = _topology_cluster_comparison_estimate(event_count)
+    if estimated_comparisons > TOPOLOGY_CLUSTER_COMPARISON_BUDGET_V1:
+        raise PathIntegrityError(
+            "topology cluster-comparison budget V1 exceeded "
+            f"({estimated_comparisons} > {TOPOLOGY_CLUSTER_COMPARISON_BUDGET_V1}; "
+            f"events={event_count})"
+        )
+
+
 def _global_incidence_signature(subpaths: Sequence[PolylineSubpath]) -> tuple[_JunctionIncidence, ...]:
     """Encode global planar junction incidence without absolute coordinates.
 
@@ -1014,10 +1043,13 @@ def _global_incidence_signature(subpaths: Sequence[PolylineSubpath]) -> tuple[_J
     24-relative-ULP coordinate bound of every other member, preventing single-linkage
     chains from merging distinct nearby junctions. Per-path intersection ranks
     preserve arrangement while allowing a junction to move during simplification.
+    Before complete-link clustering, the V1 ``E*(E-1)/2`` worst-case comparison
+    estimate must fit its named work budget.
     """
     events = _located_intersection_events(subpaths)
     if not events:
         return ()
+    _validate_topology_cluster_budget(len(events))
 
     clusters: list[list[int]] = []
     for event_index in sorted(

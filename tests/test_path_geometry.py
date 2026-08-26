@@ -5,18 +5,23 @@ import math
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reconstructing_raster_icons.geometry import (  # noqa: E402
     HAUSDORFF_DISTANCE_EVALUATION_BUDGET,
+    TOPOLOGY_CLUSTER_COMPARISON_BUDGET_V1,
     PathIntegrityError,
     PolylineSubpath,
     _global_incidence_signature,
     _hausdorff_operation_estimate,
     _intersection_signature,
     _located_intersection_events,
+    _locations_close,
+    _topology_cluster_comparison_estimate,
+    _validate_topology_cluster_budget,
     evaluate_geometry_constraints,
     flatten_svg_path,
     simplify_subpaths,
@@ -123,6 +128,19 @@ class SimplificationTests(unittest.TestCase):
                     )
                 )
         return tuple(variants)
+
+    @staticmethod
+    def _dense_junction_paths(count: int) -> tuple[PolylineSubpath, ...]:
+        return tuple(
+            PolylineSubpath(
+                (
+                    (-math.cos(math.pi * index / count), -math.sin(math.pi * index / count)),
+                    (math.cos(math.pi * index / count), math.sin(math.pi * index / count)),
+                ),
+                False,
+            )
+            for index in range(count)
+        )
 
     def test_closed_paths_rotate_to_stable_lexicographic_start(self) -> None:
         source = PolylineSubpath(
@@ -335,6 +353,52 @@ class SimplificationTests(unittest.TestCase):
             _global_incidence_signature((horizontal, vertical, rising)),
             _global_incidence_signature((horizontal, vertical, falling)),
         )
+
+    def test_topology_cluster_budget_boundary_is_exact(self) -> None:
+        self.assertEqual(TOPOLOGY_CLUSTER_COMPARISON_BUDGET_V1, 1_000_000)
+        self.assertEqual(_topology_cluster_comparison_estimate(1414), 998_991)
+        self.assertEqual(_topology_cluster_comparison_estimate(1415), 1_000_405)
+        _validate_topology_cluster_budget(1414)
+        with self.assertRaisesRegex(PathIntegrityError, "topology cluster-comparison budget"):
+            _validate_topology_cluster_budget(1415)
+
+    def test_hundred_path_dense_junction_rejects_before_cluster_comparisons(self) -> None:
+        dense = self._dense_junction_paths(100)
+        event_count = len(_located_intersection_events(dense))
+
+        self.assertEqual(event_count, 4_950)
+        self.assertEqual(_topology_cluster_comparison_estimate(event_count), 12_248_775)
+
+        with patch(
+            "reconstructing_raster_icons.geometry._locations_close", wraps=_locations_close
+        ) as comparison:
+            with self.assertRaisesRegex(PathIntegrityError, "topology cluster-comparison budget"):
+                _global_incidence_signature(dense)
+
+        comparison.assert_not_called()
+
+    def test_sparse_hundred_path_collection_is_not_rejected_by_subpath_count(self) -> None:
+        sparse = tuple(
+            PolylineSubpath(((0.0, float(index)), (1.0, float(index))), False)
+            for index in range(100)
+        )
+
+        self.assertEqual(len(_located_intersection_events(sparse)), 0)
+        self.assertEqual(_global_incidence_signature(sparse), ())
+
+    def test_actual_cluster_comparisons_do_not_exceed_estimate_or_budget(self) -> None:
+        dense = self._dense_junction_paths(10)
+        event_count = len(_located_intersection_events(dense))
+        estimate = _topology_cluster_comparison_estimate(event_count)
+
+        with patch(
+            "reconstructing_raster_icons.geometry._locations_close", wraps=_locations_close
+        ) as comparison:
+            _global_incidence_signature(dense)
+
+        self.assertEqual(event_count, 45)
+        self.assertEqual(comparison.call_count, estimate)
+        self.assertLessEqual(comparison.call_count, TOPOLOGY_CLUSTER_COMPARISON_BUDGET_V1)
 
     def test_open_loop_cannot_collapse_to_a_degenerate_candidate(self) -> None:
         source = PolylineSubpath(points=((0.0, 0.0), (1.0, 0.0), (0.0, 0.0)), closed=False)

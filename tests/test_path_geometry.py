@@ -97,6 +97,22 @@ class SimplificationTests(unittest.TestCase):
         vertex_only = math.sqrt(5.0)
         self.assertLess(distance, vertex_only)
 
+    def test_symmetric_hausdorff_is_scale_robust_at_one_nanometre(self) -> None:
+        source = PolylineSubpath(points=((0.0, 0.0), (1e-9, 0.0)), closed=False)
+        targets = (
+            PolylineSubpath(points=((0.0, -1e-15), (0.0, 1e-15)), closed=False),
+            PolylineSubpath(points=((1e-9, -1e-15), (1e-9, 1e-15)), closed=False),
+        )
+
+        self.assertAlmostEqual(symmetric_hausdorff((source,), targets), 5e-10, delta=2e-13)
+
+    def test_symmetric_hausdorff_fails_closed_before_pathological_root_work(self) -> None:
+        first = PolylineSubpath(tuple((float(index), float(index % 2)) for index in range(112)), False)
+        second = PolylineSubpath(tuple((float(index), float((index + 1) % 2)) for index in range(112)), False)
+
+        with self.assertRaisesRegex(PathIntegrityError, "Hausdorff work budget"):
+            symmetric_hausdorff((first,), (second,))
+
     def test_simplification_is_bounded_by_continuous_symmetric_hausdorff(self) -> None:
         original = PolylineSubpath(
             points=((0.0, 0.0), (1.0, 0.1), (2.0, 0.0), (3.0, -0.1), (4.0, 0.0)),
@@ -116,6 +132,11 @@ class SimplificationTests(unittest.TestCase):
         simplified = simplify_subpaths((bent, short_crossbar), delta=2.2)
 
         self.assertEqual(simplified[0].points, bent.points)
+
+    def test_open_loop_cannot_collapse_to_a_degenerate_candidate(self) -> None:
+        source = PolylineSubpath(points=((0.0, 0.0), (1.0, 0.0), (0.0, 0.0)), closed=False)
+
+        self.assertEqual(simplify_subpaths((source,), delta=3.0), (source,))
 
 
 class GeometryConstraintTests(unittest.TestCase):
@@ -178,6 +199,40 @@ class GeometryConstraintTests(unittest.TestCase):
 
         self.assertTrue(result.passed)
         self.assertEqual(result.measurements[0].measured_deviation, 0.0)
+
+    def test_intentional_intersection_does_not_hide_minimum_gap_failure(self) -> None:
+        components = {
+            "a": ((-1.0, -1.0), (1.0, 1.0)),
+            "b": ((-1.0, 1.0), (1.0, -1.0)),
+        }
+        constraints = {
+            "intentional_intersections": [{"first": "a", "second": "b"}],
+            "minimum_intentional_gaps": [{"first": "a", "second": "b", "minimum_gap": 1.0}],
+        }
+
+        result = evaluate_geometry_constraints(components, constraints, delta=1.0)
+        gap = next(item for item in result.measurements if item.constraint_kind == "gap")
+
+        self.assertFalse(result.passed)
+        self.assertFalse(gap.passed)
+        self.assertEqual(gap.details["observed_gap"], 0.0)
+
+    def test_tolerance_equality_uses_scale_aware_machine_epsilon(self) -> None:
+        constraint = {
+            "radial": [
+                {"component_id": "circle", "geometry": "circle", "center": (0.0, 0.0), "radius": 10.0, "tolerance": 1.0}
+            ]
+        }
+
+        equal = evaluate_geometry_constraints(
+            {"circle": ((11.0, 0.0), (0.0, 11.0))}, constraint, delta=1.0
+        )
+        over = evaluate_geometry_constraints(
+            {"circle": ((11.000000001, 0.0), (0.0, 11.000000001))}, constraint, delta=1.0
+        )
+
+        self.assertTrue(equal.passed)
+        self.assertFalse(over.passed)
 
 
 if __name__ == "__main__":

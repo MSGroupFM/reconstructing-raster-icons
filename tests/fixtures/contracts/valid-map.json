@@ -13,7 +13,7 @@
   "components": [{"component_id": "mark", "svg_id": "mark", "paint_type": "fill", "mandatory": true, "weight": 1, "reference_mask": {"logical_id": "reference-mark", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}, "geometry": "polygon", "bbox": [0, 0, 64, 64], "centroid": [32, 32], "area": 100, "expected_hole_count": 0, "applicable_gates": ["auto.components.present", "semantic.components.complete"]}],
   "topology_facts": [],
   "semantic_facts": [],
-  "geometry_constraints": {"endpoints": [], "radial": [], "symmetry": [], "strokes": [], "intentional_intersections": [], "minimum_intentional_gaps": []},
+  "geometry_constraints": {"lines": [], "orthogonality": [], "parallelism": [], "endpoints": [], "radial": [], "symmetry": [], "strokes": [], "intentional_intersections": [], "minimum_intentional_gaps": []},
   "applicable_gates": ["auto.components.present", "semantic.components.complete"],
   "ambiguities": [],
   "reference_mask": {"logical_id": "reference-mask", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},

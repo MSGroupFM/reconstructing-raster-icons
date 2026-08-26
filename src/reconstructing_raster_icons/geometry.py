@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 
 BoolMask = NDArray[np.bool_]
 Point = tuple[float, float]
+HAUSDORFF_ROOT_WORK_BUDGET = 250_000_000
 
 
 class PathIntegrityError(ValueError):
@@ -254,6 +255,18 @@ def _distance(first: Point, second: Point) -> float:
     return math.hypot(first[0] - second[0], first[1] - second[1])
 
 
+def within_tolerance(measured: float, tolerance: float) -> bool:
+    """Compare a deviation with an eight-ULP, magnitude-aware equality slack."""
+    measured = float(measured)
+    tolerance = float(tolerance)
+    if not math.isfinite(measured) or not math.isfinite(tolerance) or tolerance < 0.0:
+        return False
+    if measured <= tolerance:
+        return True
+    slack = 8.0 * max(math.ulp(measured), math.ulp(tolerance))
+    return measured - tolerance <= slack
+
+
 def _point_segment_distance(point: Point, start: Point, end: Point) -> float:
     dx = end[0] - start[0]
     dy = end[1] - start[1]
@@ -489,14 +502,19 @@ def _polynomial_roots_between(
     first: tuple[float, float, float], second: tuple[float, float, float], low: float, high: float
 ) -> tuple[float, ...]:
     a, b, c = (first[index] - second[index] for index in range(3))
-    epsilon = 1e-14
+    coefficient_scale = max(abs(a), abs(b), abs(c))
+    if coefficient_scale == 0.0:
+        return ()
+    a, b, c = a / coefficient_scale, b / coefficient_scale, c / coefficient_scale
+    epsilon = 32.0 * math.ulp(1.0)
     roots: list[float] = []
     if abs(a) <= epsilon:
         if abs(b) > epsilon:
             roots.append(-c / b)
     else:
         discriminant = b * b - 4.0 * a * c
-        if discriminant >= -epsilon:
+        discriminant_slack = epsilon * max(1.0, b * b, abs(4.0 * a * c))
+        if discriminant >= -discriminant_slack:
             square_root = math.sqrt(max(0.0, discriminant))
             roots.extend(((-b - square_root) / (2.0 * a), (-b + square_root) / (2.0 * a)))
     return tuple(root for root in roots if low < root < high)
@@ -544,10 +562,25 @@ def _directed_segment_hausdorff(source: tuple[Point, Point], targets: Sequence[t
 def symmetric_hausdorff(
     first: Sequence[PolylineSubpath], second: Sequence[PolylineSubpath]
 ) -> float:
-    """Return exact symmetric Hausdorff distance between continuous segments."""
+    """Return exact continuous-segment Hausdorff distance within a work budget.
+
+    ``HAUSDORFF_ROOT_WORK_BUDGET`` bounds lower-envelope root candidates before
+    the quartic worst case begins.  It is a computation guard derived from both
+    segment sets, not a universal visual node-count limit.
+    """
     first_segments, second_segments = _segments(first), _segments(second)
     if not first_segments or not second_segments:
         raise ValueError("both polyline collections must contain non-degenerate segments")
+    first_count, second_count = len(first_segments), len(second_segments)
+    estimated_root_work = (
+        first_count * (2 * second_count + 1) * (second_count * (second_count - 1) // 2)
+        + second_count * (2 * first_count + 1) * (first_count * (first_count - 1) // 2)
+    )
+    if estimated_root_work > HAUSDORFF_ROOT_WORK_BUDGET:
+        raise PathIntegrityError(
+            "continuous Hausdorff work budget exceeded "
+            f"({estimated_root_work} > {HAUSDORFF_ROOT_WORK_BUDGET} root candidates)"
+        )
     first_to_second = max(_directed_segment_hausdorff(segment, second_segments) for segment in first_segments)
     second_to_first = max(_directed_segment_hausdorff(segment, first_segments) for segment in second_segments)
     return max(first_to_second, second_to_first)
@@ -647,6 +680,8 @@ def simplify_subpaths(
         else PolylineSubpath(_douglas_peucker(path.points, delta / 2.0), False)
         for path in originals
     )
+    if any(_segments((original,)) and not _segments((candidate,)) for original, candidate in zip(originals, simplified, strict=True)):
+        return originals
     winding_preserved = all(
         not original.closed or original.signed_area * candidate.signed_area > 0.0
         for original, candidate in zip(originals, simplified, strict=True)
@@ -687,16 +722,21 @@ def _direction(points: tuple[Point, ...]) -> Point:
 def _minimum_polyline_distance(first: tuple[Point, ...], second: tuple[Point, ...]) -> float:
     first_segments = tuple(zip(first, first[1:]))
     second_segments = tuple(zip(second, second[1:]))
-    return min(
-        min(
-            _point_segment_distance(a, c, d),
-            _point_segment_distance(b, c, d),
-            _point_segment_distance(c, a, b),
-            _point_segment_distance(d, a, b),
-        )
-        for a, b in first_segments
-        for c, d in second_segments
-    )
+    minimum = math.inf
+    for first_segment in first_segments:
+        for second_segment in second_segments:
+            if _segments_intersect(first_segment, second_segment):
+                return 0.0
+            a, b = first_segment
+            c, d = second_segment
+            minimum = min(
+                minimum,
+                _point_segment_distance(a, c, d),
+                _point_segment_distance(b, c, d),
+                _point_segment_distance(c, a, b),
+                _point_segment_distance(d, a, b),
+            )
+    return minimum
 
 
 def _segments_intersect(first: tuple[Point, Point], second: tuple[Point, Point]) -> bool:
@@ -708,7 +748,19 @@ def _segments_intersect(first: tuple[Point, Point], second: tuple[Point, Point])
     values = orientation(a, b, c), orientation(a, b, d), orientation(c, d, a), orientation(c, d, b)
     if values[0] * values[1] < 0.0 and values[2] * values[3] < 0.0:
         return True
-    return _minimum_polyline_distance((a, b), (c, d)) <= 1e-12
+
+    def on_segment(start: Point, point: Point, end: Point) -> bool:
+        return (
+            min(start[0], end[0]) <= point[0] <= max(start[0], end[0])
+            and min(start[1], end[1]) <= point[1] <= max(start[1], end[1])
+        )
+
+    return (
+        (values[0] == 0.0 and on_segment(a, c, b))
+        or (values[1] == 0.0 and on_segment(a, d, b))
+        or (values[2] == 0.0 and on_segment(c, a, d))
+        or (values[3] == 0.0 and on_segment(c, b, d))
+    )
 
 
 def evaluate_geometry_constraints(
@@ -736,7 +788,7 @@ def evaluate_geometry_constraints(
     measurements: list[ConstraintMeasurement] = []
 
     def add(kind: str, subject: str, measured: float, tolerance: float, details: Mapping[str, object], passed: bool | None = None) -> None:
-        effective_passed = measured <= tolerance if passed is None else passed
+        effective_passed = within_tolerance(measured, tolerance) if passed is None else passed
         measurements.append(ConstraintMeasurement(kind, subject, float(measured), float(tolerance), effective_passed, details))
 
     for constraint in constraints.get("lines", []):
@@ -804,7 +856,7 @@ def evaluate_geometry_constraints(
         tolerance = float(constraint.get("tolerance", delta))
         measured = abs(float(component.get("stroke_width", 0.0)) - float(constraint["expected_width"]))
         style_matches = component.get("cap") == constraint["cap"] and component.get("join") == constraint["join"]
-        add("stroke", component_id, measured, tolerance, {"cap": component.get("cap"), "join": component.get("join")}, measured <= tolerance and style_matches)
+        add("stroke", component_id, measured, tolerance, {"cap": component.get("cap"), "join": component.get("join")}, within_tolerance(measured, tolerance) and style_matches)
 
     allowed_intersections: set[frozenset[str]] = set()
     for constraint in constraints.get("intentional_intersections", []):
@@ -834,7 +886,8 @@ def evaluate_geometry_constraints(
         first, second = str(constraint["first"]), str(constraint["second"])
         expected = float(constraint["minimum_gap"])
         observed = _minimum_polyline_distance(points[first], points[second])
-        add("gap", f"{first}:{second}", max(0.0, expected - observed), 0.0, {"observed_gap": observed, "minimum_gap": expected}, observed >= expected)
+        shortfall = max(0.0, expected - observed)
+        add("gap", f"{first}:{second}", shortfall, 0.0, {"observed_gap": observed, "minimum_gap": expected}, within_tolerance(shortfall, 0.0))
 
     return GeometryConstraintEvaluation(all(measurement.passed for measurement in measurements), tuple(measurements))
 

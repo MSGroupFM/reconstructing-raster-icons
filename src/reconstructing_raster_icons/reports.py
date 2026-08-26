@@ -16,6 +16,7 @@ from .constants import (
     ExitCode,
     Status,
 )
+from .geometry import within_tolerance
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -27,9 +28,9 @@ class ArtifactEvidence:
     sha256: str
 
     def __post_init__(self) -> None:
-        if not self.logical_id:
+        if not isinstance(self.logical_id, str) or not self.logical_id:
             raise ValueError("artifact logical_id must be nonempty")
-        if not _SHA256_RE.fullmatch(self.sha256):
+        if not isinstance(self.sha256, str) or not _SHA256_RE.fullmatch(self.sha256):
             raise ValueError("artifact sha256 must be 64 lowercase hexadecimal characters")
 
 
@@ -41,10 +42,24 @@ class MeasurementEvidence:
     unit: str
 
     def __post_init__(self) -> None:
-        if not self.name or not self.unit:
+        if not isinstance(self.name, str) or not isinstance(self.unit, str) or not self.name or not self.unit:
             raise ValueError("measurement name and unit must be nonempty")
-        if not math.isfinite(self.measured) or not math.isfinite(self.tolerance) or self.tolerance < 0.0:
-            raise ValueError("measurement values must be finite and tolerance non-negative")
+        if (
+            isinstance(self.measured, bool)
+            or not isinstance(self.measured, (int, float))
+            or isinstance(self.tolerance, bool)
+            or not isinstance(self.tolerance, (int, float))
+        ):
+            raise TypeError("measurement values must be real numbers")
+        if (
+            not math.isfinite(self.measured)
+            or self.measured < 0.0
+            or not math.isfinite(self.tolerance)
+            or self.tolerance < 0.0
+        ):
+            raise ValueError("measurement values must be finite and non-negative")
+        object.__setattr__(self, "measured", float(self.measured))
+        object.__setattr__(self, "tolerance", float(self.tolerance))
 
 
 @dataclass(frozen=True)
@@ -56,6 +71,12 @@ class GateEvidence:
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifacts", tuple(self.artifacts))
         object.__setattr__(self, "measurements", tuple(self.measurements))
+        if any(not isinstance(artifact, ArtifactEvidence) for artifact in self.artifacts):
+            raise TypeError("gate artifacts must contain only ArtifactEvidence records")
+        if any(not isinstance(measurement, MeasurementEvidence) for measurement in self.measurements):
+            raise TypeError("gate measurements must contain only MeasurementEvidence records")
+        if not isinstance(self.basis, str):
+            raise TypeError("gate evidence basis must be a string")
         if not self.artifacts and not self.measurements and not self.basis:
             raise ValueError("gate evidence must contain an artifact, measurement, or basis")
 
@@ -141,11 +162,15 @@ def evaluate_automatic_gates(
             raise ValueError(f"{gate_id} evidence must include measured deviation and tolerance")
         if gate_id not in {"auto.primitives.constraints", "auto.paths.integrity"} and not gate_evidence.artifacts:
             raise ValueError(f"{gate_id} static evidence must include logical artifact ID and SHA-256")
+        numeric_passed = all(
+            within_tolerance(measurement.measured, measurement.tolerance)
+            for measurement in gate_evidence.measurements
+        )
         results.append(
             GateResult(
                 gate_id=gate_id,
                 kind="automatic",
-                state="pass" if check["passed"] else "fail",
+                state="pass" if check["passed"] and numeric_passed else "fail",
                 evidence=gate_evidence,
                 evaluator=evaluator,
                 timestamp=timestamp,
@@ -166,34 +191,28 @@ def resolve_status(
     """Apply status and exit-code precedence without rounding the score."""
     if invalid_input:
         return StatusResolution(Status.INVALID_INPUT, ExitCode.INVALID_INPUT)
-    if runtime_error:
-        return StatusResolution(Status.RUNTIME_ERROR, ExitCode.RUNTIME_ERROR)
-    if not canonical_environment:
-        return StatusResolution(Status.NON_CANONICAL, ExitCode.NON_CANONICAL)
-
     gate_ids = [gate.gate_id for gate in gates]
     if len(gate_ids) != len(set(gate_ids)) or any(gate_id not in MANDATORY_GATE_IDS for gate_id in gate_ids):
         return StatusResolution(Status.INVALID_INPUT, ExitCode.INVALID_INPUT)
-    if any(gate.state == "fail" for gate in gates):
-        return StatusResolution(Status.NOT_ACCEPTED, ExitCode.GATE_FAILED)
-
-    if score is not None and target is not None:
+    if score is not None:
+        if not math.isfinite(score) or not 0.0 <= score <= 100.0:
+            return StatusResolution(Status.INVALID_INPUT, ExitCode.INVALID_INPUT)
+    if target is not None:
         if (
-            not math.isfinite(score)
-            or not 0.0 <= score <= 100.0
-            or not math.isfinite(target)
+            not math.isfinite(target)
             or not 0.0 < target <= 100.0
         ):
             return StatusResolution(Status.INVALID_INPUT, ExitCode.INVALID_INPUT)
-        if score < target:
-            return StatusResolution(Status.NOT_ACCEPTED, ExitCode.SCORE_BELOW_TARGET)
-    elif score is not None or target is not None:
-        return StatusResolution(Status.INVALID_INPUT, ExitCode.INVALID_INPUT)
-
     present = set(gate_ids)
     missing_automatic = set(AUTOMATIC_GATE_IDS) - present
-    if missing_automatic or score is None:
+    if runtime_error or missing_automatic or score is None or target is None:
         return StatusResolution(Status.RUNTIME_ERROR, ExitCode.RUNTIME_ERROR)
+    if not canonical_environment:
+        return StatusResolution(Status.NON_CANONICAL, ExitCode.NON_CANONICAL)
+    if any(gate.state == "fail" for gate in gates):
+        return StatusResolution(Status.NOT_ACCEPTED, ExitCode.GATE_FAILED)
+    if score < target:
+        return StatusResolution(Status.NOT_ACCEPTED, ExitCode.SCORE_BELOW_TARGET)
     missing_semantic = set(SEMANTIC_GATE_IDS) - present
     if missing_semantic or any(gate.kind == "semantic" and gate.state == "not_evaluated" for gate in gates):
         return StatusResolution(Status.INCOMPLETE, ExitCode.INCOMPLETE_REVIEW)

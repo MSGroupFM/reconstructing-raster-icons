@@ -213,6 +213,29 @@ class SchemaContractTests(unittest.TestCase):
         with self.assertRaises(jsonschema.ValidationError):
             validate_document(document, "reconstruction-map-draft")
 
+    def test_universal_line_relation_constraints_are_schema_expressible(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            constraints = document["geometry_constraints"]  # type: ignore[assignment]
+            constraints["lines"].append(  # type: ignore[index]
+                {"component_id": "mark", "start": [0, 0], "end": [1, 0], "tolerance": 0.01}
+            )
+            constraints["orthogonality"].append(  # type: ignore[index]
+                {"first": "mark", "second": "mark", "tolerance": 0.01}
+            )
+            constraints["parallelism"].append(  # type: ignore[index]
+                {"first": "mark", "second": "mark", "tolerance": 0.01}
+            )
+
+            validate_document(document, schema_name)
+
+            constraints["lines"][0]["stand"] = True  # type: ignore[index]
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(document, schema_name)
+
     def test_acceptance_report_includes_runtime_viewport_and_topology_nodes(self) -> None:
         report = accepted_report_fixture()
         for field in ("canonical_renderer", "topology_nodes"):

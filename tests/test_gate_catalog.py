@@ -85,6 +85,32 @@ class GateCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact automatic gate catalog"):
             evaluate_automatic_gates(checks, evaluator="test-suite", timestamp=NOW)
 
+    def test_geometry_gate_state_cannot_contradict_measurement_evidence(self) -> None:
+        checks = automatic_checks()
+        checks["auto.primitives.constraints"] = {
+            "passed": True,
+            "evidence": GateEvidence(
+                artifacts=(ArtifactEvidence(logical_id="candidate.svg", sha256=SHA256),),
+                measurements=(
+                    MeasurementEvidence(name="deviation", measured=2.0, tolerance=1.0, unit="canonical_px"),
+                ),
+                basis="contradictory caller flag",
+            ),
+        }
+
+        gates = evaluate_automatic_gates(checks, evaluator="test-suite", timestamp=NOW)
+        primitive = next(gate for gate in gates if gate.gate_id == "auto.primitives.constraints")
+
+        self.assertEqual(primitive.state, "fail")
+
+    def test_nested_evidence_item_types_are_enforced_at_construction(self) -> None:
+        with self.assertRaises(TypeError):
+            GateEvidence(artifacts=("not-artifact-evidence",))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            GateEvidence(measurements=(object(),))  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            MeasurementEvidence(name="deviation", measured=-0.1, tolerance=1.0, unit="canonical_px")
+
     def test_geometry_gate_evidence_is_typed_and_contains_deviation_and_tolerance(self) -> None:
         gates = evaluate_automatic_gates(automatic_checks(), evaluator="test-suite", timestamp=NOW)
         primitive = next(gate for gate in gates if gate.gate_id == "auto.primitives.constraints")
@@ -168,6 +194,25 @@ class StatusResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolution.status, Status.INVALID_INPUT)
         self.assertEqual(resolution.exit_code, ExitCode.INVALID_INPUT)
+
+    def test_derived_invalid_input_outranks_gate_failure(self) -> None:
+        gates = list(complete_gates())
+        gates[-1] = GateResult(gates[-1].gate_id, "semantic", "fail", evidence(), "reviewer", NOW)
+
+        resolution = resolve_status(score=float("nan"), target=98.0, gates=gates)
+
+        self.assertEqual((resolution.status, resolution.exit_code), (Status.INVALID_INPUT, ExitCode.INVALID_INPUT))
+
+    def test_missing_metrics_and_automatic_catalog_outrank_known_failures(self) -> None:
+        failing = list(complete_gates())
+        failing[-1] = GateResult(failing[-1].gate_id, "semantic", "fail", evidence(), "reviewer", NOW)
+        missing_auto = [gate for gate in failing if gate.gate_id != "auto.svg.render"]
+
+        missing_metrics = resolve_status(score=None, target=None, gates=failing)
+        missing_catalog = resolve_status(score=1.0, target=98.0, gates=missing_auto)
+
+        self.assertEqual((missing_metrics.status, missing_metrics.exit_code), (Status.RUNTIME_ERROR, ExitCode.RUNTIME_ERROR))
+        self.assertEqual((missing_catalog.status, missing_catalog.exit_code), (Status.RUNTIME_ERROR, ExitCode.RUNTIME_ERROR))
 
 
 if __name__ == "__main__":

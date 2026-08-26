@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 BoolMask = NDArray[np.bool_]
 Point = tuple[float, float]
 HAUSDORFF_DISTANCE_EVALUATION_BUDGET = 250_000_000
+_INTERSECTION_RELATIVE_ULPS = 24.0
 
 
 class PathIntegrityError(ValueError):
@@ -676,12 +677,45 @@ def _parameters_close(first: float, second: float) -> bool:
     return abs(first - second) <= 32.0 * math.ulp(max(1.0, abs(first), abs(second)))
 
 
+def _coordinate_uncertainty(magnitude: float) -> float:
+    """Scale-linear roundoff bound for canonical intersection coordinates."""
+    return max(
+        _INTERSECTION_RELATIVE_ULPS * math.ulp(1.0) * magnitude,
+        4.0 * math.ulp(magnitude),
+    )
+
+
+@dataclass(frozen=True)
+class _SegmentIntersectionEvent:
+    kind: str
+    first_low: float
+    first_high: float
+    second_low: float
+    second_high: float
+    location: Point
+    uncertainty: float
+
+
 def _segment_intersection_events(
     first: tuple[Point, Point], second: tuple[Point, Point]
-) -> tuple[tuple[str, float, float, float, float], ...]:
-    """Return point or overlap events with local parameters on both segments."""
-    a, b = first
-    c, d = second
+) -> tuple[_SegmentIntersectionEvent, ...]:
+    """Return canonical, orientation-independent segment intersection events."""
+
+    def canonical_segment(segment: tuple[Point, Point]) -> tuple[tuple[Point, Point], bool]:
+        if segment[0] <= segment[1]:
+            return segment, False
+        return (segment[1], segment[0]), True
+
+    canonical_first, first_reversed = canonical_segment(first)
+    canonical_second, second_reversed = canonical_segment(second)
+    pair_swapped = canonical_second < canonical_first
+    arithmetic_first, arithmetic_second = (
+        (canonical_second, canonical_first)
+        if pair_swapped
+        else (canonical_first, canonical_second)
+    )
+    a, b = arithmetic_first
+    c, d = arithmetic_second
     first_vector = (b[0] - a[0], b[1] - a[1])
     second_vector = (d[0] - c[0], d[1] - c[1])
     offset = (c[0] - a[0], c[1] - a[1])
@@ -694,11 +728,71 @@ def _segment_intersection_events(
             return 1.0
         return parameter
 
+    def input_parameters(
+        arithmetic_first_low: float,
+        arithmetic_first_high: float,
+        arithmetic_second_low: float,
+        arithmetic_second_high: float,
+    ) -> tuple[float, float, float, float]:
+        if pair_swapped:
+            canonical_first_values = (arithmetic_second_low, arithmetic_second_high)
+            canonical_second_values = (arithmetic_first_low, arithmetic_first_high)
+        else:
+            canonical_first_values = (arithmetic_first_low, arithmetic_first_high)
+            canonical_second_values = (arithmetic_second_low, arithmetic_second_high)
+
+        def orient(values: tuple[float, float], reversed_: bool) -> tuple[float, float]:
+            if reversed_:
+                return snap(1.0 - values[0]), snap(1.0 - values[1])
+            return values
+
+        first_values = orient(canonical_first_values, first_reversed)
+        second_values = orient(canonical_second_values, second_reversed)
+        return first_values[0], first_values[1], second_values[0], second_values[1]
+
+    def event(
+        kind: str,
+        arithmetic_first_low: float,
+        arithmetic_first_high: float,
+        arithmetic_second_low: float,
+        arithmetic_second_high: float,
+    ) -> _SegmentIntersectionEvent:
+        midpoint = (arithmetic_first_low + arithmetic_first_high) / 2.0
+        location = (
+            a[0] + midpoint * first_vector[0],
+            a[1] + midpoint * first_vector[1],
+        )
+        coordinate_scale = max(
+            abs(value)
+            for point in (*arithmetic_first, *arithmetic_second, location)
+            for value in point
+        )
+        parameters = input_parameters(
+            arithmetic_first_low,
+            arithmetic_first_high,
+            arithmetic_second_low,
+            arithmetic_second_high,
+        )
+        return _SegmentIntersectionEvent(
+            kind,
+            *parameters,
+            location,
+            _coordinate_uncertainty(coordinate_scale),
+        )
+
     if not _cross_is_zero(first_vector, second_vector):
         first_parameter = snap(_cross(offset, second_vector) / denominator)
         second_parameter = snap(_cross(offset, first_vector) / denominator)
         if 0.0 <= first_parameter <= 1.0 and 0.0 <= second_parameter <= 1.0:
-            return (("transverse", first_parameter, first_parameter, second_parameter, second_parameter),)
+            return (
+                event(
+                    "transverse",
+                    first_parameter,
+                    first_parameter,
+                    second_parameter,
+                    second_parameter,
+                ),
+            )
         return ()
     if not _cross_is_zero(offset, first_vector):
         return ()
@@ -726,7 +820,7 @@ def _segment_intersection_events(
 
     second_low, second_high = second_parameter(low), second_parameter(high)
     kind = "touch" if _parameters_close(low, high) else "overlap"
-    return ((kind, low, high, second_low, second_high),)
+    return (event(kind, low, high, second_low, second_high),)
 
 
 def _path_parameter_data(path: PolylineSubpath) -> tuple[tuple[tuple[Point, Point], ...], tuple[float, ...], float]:
@@ -840,9 +934,11 @@ def _located_intersection_events(subpaths: Sequence[PolylineSubpath]) -> tuple[_
                             len(first_segments) - 1,
                         }:
                             continue
-                    for kind, first_low, first_high, second_low, second_high in _segment_intersection_events(
-                        first_segment, second_segment
-                    ):
+                    for segment_event in _segment_intersection_events(first_segment, second_segment):
+                        first_low = segment_event.first_low
+                        first_high = segment_event.first_high
+                        second_low = segment_event.second_low
+                        second_high = segment_event.second_high
                         first_midpoint = (first_low + first_high) / 2.0
                         second_midpoint = (second_low + second_high) / 2.0
                         first_position = (
@@ -851,7 +947,7 @@ def _located_intersection_events(subpaths: Sequence[PolylineSubpath]) -> tuple[_
                         second_position = (
                             second_prefixes[right_index] + second_midpoint * _distance(*second_segment)
                         ) / second_total
-                        if kind == "transverse":
+                        if segment_event.kind == "transverse":
                             event_kind = _isolated_intersection_kind(
                                 subpaths[first_index],
                                 left_index,
@@ -860,37 +956,16 @@ def _located_intersection_events(subpaths: Sequence[PolylineSubpath]) -> tuple[_
                                 right_index,
                                 second_midpoint,
                             )
-                        elif kind == "touch" and any(
+                        elif segment_event.kind == "touch" and any(
                             _parameters_close(position, 0.0) or _parameters_close(position, 1.0)
                             for position in (first_position, second_position)
                         ):
                             event_kind = "endpoint"
                         else:
-                            event_kind = kind
-                        first_location = (
-                            first_segment[0][0]
-                            + first_midpoint * (first_segment[1][0] - first_segment[0][0]),
-                            first_segment[0][1]
-                            + first_midpoint * (first_segment[1][1] - first_segment[0][1]),
-                        )
-                        second_location = (
-                            second_segment[0][0]
-                            + second_midpoint * (second_segment[1][0] - second_segment[0][0]),
-                            second_segment[0][1]
-                            + second_midpoint * (second_segment[1][1] - second_segment[0][1]),
-                        )
-                        location = (
-                            first_location[0] + (second_location[0] - first_location[0]) / 2.0,
-                            first_location[1] + (second_location[1] - first_location[1]) / 2.0,
-                        )
-                        local_scale = max(
-                            abs(value)
-                            for point in (*first_segment, *second_segment, location)
-                            for value in point
-                        )
+                            event_kind = segment_event.kind
                         event = _LocatedIntersection(
-                            location=location,
-                            uncertainty=32.0 * math.ulp(local_scale),
+                            location=segment_event.location,
+                            uncertainty=segment_event.uncertainty,
                             first_path=first_index,
                             second_path=second_index,
                             kind=event_kind,
@@ -921,7 +996,11 @@ def _locations_close(first: _LocatedIntersection, second: _LocatedIntersection) 
         abs(second.location[0]),
         abs(second.location[1]),
     )
-    tolerance = max(first.uncertainty, second.uncertainty, 32.0 * math.ulp(coordinate_scale))
+    tolerance = max(
+        first.uncertainty,
+        second.uncertainty,
+        _coordinate_uncertainty(coordinate_scale),
+    )
     return (
         abs(first.location[0] - second.location[0]) <= tolerance
         and abs(first.location[1] - second.location[1]) <= tolerance
@@ -932,7 +1011,7 @@ def _global_incidence_signature(subpaths: Sequence[PolylineSubpath]) -> tuple[_J
     """Encode global planar junction incidence without absolute coordinates.
 
     Pair events are clustered only when every member is within a scale-aware
-    32-ULP coordinate bound of every other member, preventing single-linkage
+    24-relative-ULP coordinate bound of every other member, preventing single-linkage
     chains from merging distinct nearby junctions. Per-path intersection ranks
     preserve arrangement while allowing a junction to move during simplification.
     """
@@ -1053,9 +1132,11 @@ def _intersection_signature(
                             continue
                         if subpaths[first_index].closed and {left_index, right_index} == {0, len(first_segments) - 1}:
                             continue
-                    for kind, first_low, first_high, second_low, second_high in _segment_intersection_events(
-                        first_segment, second_segment
-                    ):
+                    for segment_event in _segment_intersection_events(first_segment, second_segment):
+                        first_low = segment_event.first_low
+                        first_high = segment_event.first_high
+                        second_low = segment_event.second_low
+                        second_high = segment_event.second_high
                         first_positions = (
                             (first_prefixes[left_index] + first_low * _distance(*first_segment)) / first_total,
                             (first_prefixes[left_index] + first_high * _distance(*first_segment)) / first_total,
@@ -1068,7 +1149,7 @@ def _intersection_signature(
                             _parameters_close(position, 0.0) or _parameters_close(position, 1.0)
                             for position in (*first_positions, *second_positions)
                         )
-                        if kind == "transverse":
+                        if segment_event.kind == "transverse":
                             event_kind = _isolated_intersection_kind(
                                 subpaths[first_index],
                                 left_index,
@@ -1078,7 +1159,11 @@ def _intersection_signature(
                                 second_low,
                             )
                         else:
-                            event_kind = "endpoint" if kind != "overlap" and endpoint else kind
+                            event_kind = (
+                                "endpoint"
+                                if segment_event.kind != "overlap" and endpoint
+                                else segment_event.kind
+                            )
                         event = (
                             event_kind,
                             first_positions[0],

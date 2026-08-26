@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 import sys
@@ -15,6 +16,7 @@ from reconstructing_raster_icons.geometry import (  # noqa: E402
     _global_incidence_signature,
     _hausdorff_operation_estimate,
     _intersection_signature,
+    _located_intersection_events,
     evaluate_geometry_constraints,
     flatten_svg_path,
     simplify_subpaths,
@@ -103,6 +105,24 @@ class SimplificationTests(unittest.TestCase):
                 False,
             ),
         )
+
+    @staticmethod
+    def _junction_variants(
+        paths: tuple[PolylineSubpath, ...],
+    ) -> tuple[tuple[PolylineSubpath, ...], ...]:
+        variants: list[tuple[PolylineSubpath, ...]] = []
+        for permutation in itertools.permutations(range(len(paths))):
+            permuted = tuple(paths[index] for index in permutation)
+            for mask in range(1 << len(paths)):
+                variants.append(
+                    tuple(
+                        PolylineSubpath(tuple(reversed(path.points)), path.closed)
+                        if mask & (1 << index)
+                        else path
+                        for index, path in enumerate(permuted)
+                    )
+                )
+        return tuple(variants)
 
     def test_closed_paths_rotate_to_stable_lexicographic_start(self) -> None:
         source = PolylineSubpath(
@@ -260,6 +280,34 @@ class SimplificationTests(unittest.TestCase):
 
                 self.assertEqual(len(_global_incidence_signature(junction)), 1)
                 self.assertEqual(len(_global_incidence_signature(separated)), 3)
+
+    def test_fourteen_ulp_partition_is_orientation_and_permutation_invariant(self) -> None:
+        epsilon_ratio = 14.0 * math.ulp(1.0)
+        for scale in (1e-9, 1.0, 1e9):
+            with self.subTest(scale=scale):
+                shared = self._three_path_junction(scale, epsilon_ratio)
+                separated = tuple(
+                    PolylineSubpath((path.points[0], path.points[-1]), False) for path in shared
+                )
+                cluster_counts = {
+                    len(_global_incidence_signature(variant))
+                    for variant in self._junction_variants(separated)
+                }
+                representative_sets = {
+                    tuple(sorted(event.location for event in _located_intersection_events(variant)))
+                    for variant in self._junction_variants(separated)
+                }
+
+                self.assertEqual(cluster_counts, {3})
+                self.assertEqual(len(representative_sets), 1)
+
+    def test_thirteen_point_five_ulp_simplification_always_rolls_back(self) -> None:
+        epsilon_ratio = 13.5 * math.ulp(1.0)
+        for scale in (1e-9, 1.0, 1e9):
+            with self.subTest(scale=scale):
+                shared = self._three_path_junction(scale, epsilon_ratio)
+                for variant in self._junction_variants(shared):
+                    self.assertEqual(simplify_subpaths(variant, 0.05 * scale), variant)
 
     def test_valid_simplification_can_retain_a_shared_junction(self) -> None:
         shared = (

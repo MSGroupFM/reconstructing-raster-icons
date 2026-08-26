@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -65,6 +67,11 @@ class RendererTests(unittest.TestCase):
             ("square.svg", (128, 128)),
             ("landscape.svg", (1024, 576)),
         )
+        memory_isolation_supported = True
+        try:
+            renderer_module._probe_memory_preexec(renderer_module._memory_preexec())
+        except RendererLockError:
+            memory_isolation_supported = False
         with patch.dict(os.environ, {"RECONSTRUCTING_RASTER_ICONS_NODE": str(EXACT_NODE)}):
             for fixture_name, size in fixtures:
                 with self.subTest(fixture=fixture_name), TemporaryDirectory() as temporary_directory:
@@ -73,6 +80,13 @@ class RendererTests(unittest.TestCase):
                     first = render_canonical(document, size, workspace)
                     second = render_canonical(document, size, workspace)
 
+                    if not memory_isolation_supported:
+                        self.assertEqual(first.status, Status.NON_CANONICAL)
+                        self.assertEqual(second.status, Status.NON_CANONICAL)
+                        self.assertIn("memory isolation", first.diagnostic)
+                        self.assertEqual(first.png_bytes, b"")
+                        self.assertEqual(list(workspace.iterdir()), [])
+                        continue
                     self.assertEqual(first.status, Status.ACCEPTED, first.diagnostic)
                     self.assertEqual(second.status, Status.ACCEPTED, second.diagnostic)
                     self.assertEqual(first.sha256, second.sha256)
@@ -199,6 +213,40 @@ class RendererTests(unittest.TestCase):
                 Image.new(mode, size).save(buffer, format="PNG")
                 with self.assertRaises(RendererLockError):
                     validator(buffer.getvalue(), (128, 128))
+
+    def test_darwin_memory_preexec_sets_data_and_resident_limits(self) -> None:
+        applied: dict[int, tuple[int, int]] = {}
+
+        def setrlimit(kind: int, limits: tuple[int, int]) -> None:
+            applied[kind] = limits
+
+        fake_resource = SimpleNamespace(
+            RLIMIT_DATA=2,
+            RLIMIT_RSS=5,
+            setrlimit=setrlimit,
+            getrlimit=lambda kind: applied.get(kind, (-1, -1)),
+        )
+        with (
+            patch.object(renderer_module.sys, "platform", "darwin"),
+            patch.dict(sys.modules, {"resource": fake_resource}),
+        ):
+            preexec = renderer_module._memory_preexec()
+            self.assertTrue(callable(preexec))
+            preexec()
+
+        expected = (renderer_module.MEMORY_LIMIT_BYTES, renderer_module.MEMORY_LIMIT_BYTES)
+        self.assertEqual(applied, {2: expected, 5: expected})
+
+    @unittest.skipUnless(os.name == "posix", "pre-exec limits apply only to POSIX")
+    def test_memory_preexec_error_fails_capability_probe_closed(self) -> None:
+        def broken_limit() -> None:
+            raise OSError("setrlimit failed")
+
+        probe = getattr(renderer_module, "_probe_memory_preexec", None)
+        self.assertTrue(callable(probe))
+        if probe is not None:
+            with self.assertRaises(RendererLockError):
+                probe(broken_limit)
 
 
 if __name__ == "__main__":

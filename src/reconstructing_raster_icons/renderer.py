@@ -357,7 +357,7 @@ console.log(JSON.stringify(evidence));
             preexec_fn=preexec,
             start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, subprocess.SubprocessError) as error:
         raise RendererLockError("Node permission attestation could not run") from error
     if completed.returncode or completed.stderr:
         raise RendererLockError("Node permission attestation did not complete cleanly")
@@ -410,22 +410,51 @@ console.log(JSON.stringify(evidence));
 
 
 def _memory_preexec() -> Any:
-    """Return an enforceable Unix limiter where the platform implements RLIMIT_AS."""
-    if os.name != "posix" or sys.platform == "darwin":
-        # Darwin exposes RLIMIT_AS but rejects finite values with EINVAL. V8's
-        # hard old-space cap remains active there; Linux receives the process cap.
+    """Return a verified-in-child 512 MiB Unix process-memory limiter."""
+    if os.name != "posix":
         return None
     try:
         import resource
 
-        limit_kind = resource.RLIMIT_AS
+        if sys.platform == "darwin":
+            # Darwin aliases RLIMIT_RSS and RLIMIT_AS. RLIMIT_DATA adds a
+            # distinct data-segment ceiling; both must be enforceable for a
+            # canonical run on that host.
+            limit_kinds = (resource.RLIMIT_DATA, resource.RLIMIT_RSS)
+        else:
+            limit_kinds = (resource.RLIMIT_AS,)
     except (ImportError, AttributeError) as error:
         raise RendererLockError("Unix process memory isolation is unavailable") from error
 
     def set_limit() -> None:
-        resource.setrlimit(limit_kind, (MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES))
+        exact_limit = (MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES)
+        for limit_kind in limit_kinds:
+            resource.setrlimit(limit_kind, exact_limit)
+        for limit_kind in limit_kinds:
+            if resource.getrlimit(limit_kind) != exact_limit:
+                raise OSError("process memory limit could not be verified")
 
     return set_limit
+
+
+def _probe_memory_preexec(preexec: Any) -> None:
+    """Prove the pre-exec memory limiter works before starting any Node code."""
+    if preexec is None:
+        return
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/true"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+            env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/usr/bin:/bin", "TZ": "UTC"},
+            preexec_fn=preexec,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RendererLockError("Unix process memory isolation could not be established") from error
+    if completed.returncode:
+        raise RendererLockError("Unix process memory isolation capability probe failed")
 
 
 def _failure(
@@ -527,6 +556,7 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         loader, wasm, runner = _verify_install(lock)
         node = _node_binary()
         preexec = _memory_preexec()
+        _probe_memory_preexec(preexec)
         workspace_path = Path(workspace)
         if workspace_path.is_symlink():
             raise RendererLockError("renderer workspace cannot be a symlink")
@@ -590,5 +620,5 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         return _failure(str(error), dimensions, lock, attestation)
     except subprocess.TimeoutExpired:
         return _failure("canonical renderer exceeded the 15 second timeout", dimensions, lock, attestation)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         return _failure(f"canonical isolation could not be established: {error}", dimensions, lock, attestation)

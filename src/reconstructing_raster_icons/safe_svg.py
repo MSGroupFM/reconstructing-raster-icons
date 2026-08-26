@@ -80,7 +80,17 @@ _ID = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.:-]*\Z", re.ASCII)
 _ID_REFERENCES = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.:-]*(?:\s+[A-Za-z_][A-Za-z0-9_.:-]*)*\Z", re.ASCII)
 _LANGUAGE = re.compile(r"\A[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*\Z", re.ASCII)
 _COLOR = re.compile(r"\A(?:none|currentColor|#[0-9A-Fa-f]{3}|#[0-9A-Fa-f]{6})\Z", re.ASCII)
-_FORBIDDEN_RAW_MARKUP = (re.compile(br"<!DOCTYPE", re.IGNORECASE), re.compile(br"<!ENTITY", re.IGNORECASE))
+_XML_SPACE = br"[ \t\r\n]*"
+_FORBIDDEN_RAW_MARKUP = (
+    re.compile(
+        br"<!" + _XML_SPACE + _XML_SPACE.join((br"D", br"O", br"C", br"T", br"Y", br"P", br"E")),
+        re.IGNORECASE,
+    ),
+    re.compile(
+        br"<!" + _XML_SPACE + _XML_SPACE.join((br"E", br"N", br"T", br"I", br"T", br"Y")),
+        re.IGNORECASE,
+    ),
+)
 _FORBIDDEN_SCHEME = re.compile(br"(?:data|https?|file|ftp|javascript|vbscript|blob):", re.IGNORECASE)
 _SVG_NAMESPACE_BYTES = SVG_NAMESPACE.encode("ascii")
 

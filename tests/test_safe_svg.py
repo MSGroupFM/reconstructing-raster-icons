@@ -47,6 +47,22 @@ class SafeSvgTests(unittest.TestCase):
             with self.assertRaises(SecurityViolation):
                 validate_svg(path)
 
+    def test_rejects_whitespace_obfuscated_dtd_before_xml_parse(self) -> None:
+        payloads = (
+            "<! DoCtYpE svg><svg/>",
+            '<!\nEnTiTy x "boom"><svg/>',
+            "<! D O C T Y P E svg><svg/>",
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                path = self.write_svg(payload)
+                with patch(
+                    "reconstructing_raster_icons.safe_svg.DefusedElementTree.fromstring",
+                    side_effect=AssertionError("XML parser must not run"),
+                ):
+                    with self.assertRaises(SecurityViolation):
+                        validate_svg(path)
+
     def test_rejects_noncanonical_declaration_before_xml_parse(self) -> None:
         path = self.write_svg('<?XML version="1.0"?><svg/>')
         with patch(

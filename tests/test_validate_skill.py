@@ -61,6 +61,23 @@ class SkillValidatorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERROR link.absolute: SKILL.md: /tmp/outside.md\n", output)
 
+    def test_percent_decoded_nul_link_has_stable_invalid_path_diagnostic(self) -> None:
+        def add_nul_link(root: Path) -> None:
+            path = root / "SKILL.md"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\n[bad](references/%00missing.md)\n",
+                encoding="utf-8",
+            )
+
+        result, output = self.mutate_skill(add_nul_link)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "ERROR link.invalid_path: SKILL.md: references/%00missing.md\n",
+        )
+        self.assertNotIn("Traceback", output)
+
     def test_unknown_frontmatter_key_is_rejected(self) -> None:
         def add_unknown_key(root: Path) -> None:
             path = root / "SKILL.md"
@@ -212,6 +229,69 @@ class SkillValidatorTests(unittest.TestCase):
         result, output = self.mutate_skill(unquote)
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERROR agents.string_unquoted: agents/openai.yaml: interface.display_name\n", output)
+
+    def test_agents_yaml_malformed_scalars_are_rejected(self) -> None:
+        replacements = (
+            "display_name: 'Reconstruct Raster Icons' garbage '",
+            'display_name: "Reconstruct Raster Icons" garbage "',
+            "display_name: invalid: mapping",
+            "display_name: true",
+        )
+        for replacement in replacements:
+            with self.subTest(replacement=replacement):
+                def replace_display_name(root: Path) -> None:
+                    path = root / "agents" / "openai.yaml"
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                    lines[1] = f"  {replacement}"
+                    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                result, output = self.mutate_skill(replace_display_name)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ERROR agents.", output)
+                self.assertNotIn("Traceback", output)
+
+    def test_agents_yaml_unsafe_constructs_and_duplicates_are_rejected(self) -> None:
+        replacements = (
+            'display_name: !unsafe "Reconstruct Raster Icons"',
+            'display_name: &anchor "Reconstruct Raster Icons"',
+            "display_name: *anchor",
+        )
+        for replacement in replacements:
+            with self.subTest(replacement=replacement):
+                def replace_display_name(root: Path) -> None:
+                    path = root / "agents" / "openai.yaml"
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                    lines[1] = f"  {replacement}"
+                    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                result, output = self.mutate_skill(replace_display_name)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ERROR agents.", output)
+                self.assertNotIn("Traceback", output)
+
+        def duplicate_display_name(root: Path) -> None:
+            path = root / "agents" / "openai.yaml"
+            lines = path.read_text(encoding="utf-8").splitlines()
+            lines.insert(2, '  display_name: "Duplicate"')
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        result, output = self.mutate_skill(duplicate_display_name)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "ERROR agents.duplicate_key: agents/openai.yaml: interface.display_name\n",
+            output,
+        )
+
+    def test_agents_yaml_valid_single_quoted_string_is_accepted(self) -> None:
+        def single_quote_display_name(root: Path) -> None:
+            path = root / "agents" / "openai.yaml"
+            lines = path.read_text(encoding="utf-8").splitlines()
+            lines[1] = "  display_name: 'Reconstruct Raster Icons'"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        result, output = self.mutate_skill(single_quote_display_name)
+        self.assertEqual(result.returncode, 0, output)
+        self.assertEqual(result.stdout, "Skill is valid.\n")
 
     def test_default_prompt_requires_standalone_skill_token(self) -> None:
         def add_prefix_collision(root: Path) -> None:

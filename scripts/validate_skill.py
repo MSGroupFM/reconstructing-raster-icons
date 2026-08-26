@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import json
 from pathlib import Path, PureWindowsPath
 import re
 import sys
@@ -156,49 +155,85 @@ def _validate_frontmatter(text: str, issues: list[Issue]) -> None:
         issues.append(Issue("frontmatter.description", f"{relative}: expected nonempty description"))
 
 
-def _decode_quoted_yaml_string(raw: str) -> str | None:
-    value = raw.strip()
-    if len(value) < 2:
-        return None
-    if value.startswith('"') and value.endswith('"'):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-        return decoded if isinstance(decoded, str) else None
-    if value.startswith("'") and value.endswith("'"):
-        return value[1:-1].replace("''", "'")
-    return None
-
-
 def _validate_agents(text: str, issues: list[Issue]) -> None:
     relative = "agents/openai.yaml"
-    sections: dict[str, dict[str, str]] = {}
-    current: str | None = None
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip() or line.lstrip().startswith("#"):
+    try:
+        events = list(yaml.parse(text, Loader=yaml.SafeLoader))
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        line_number = (mark.line + 1) if mark is not None else 1
+        issues.append(Issue("agents.syntax", f"{relative}:{line_number}: invalid YAML"))
+        return
+
+    anchored_event = next(
+        (
+            event
+            for event in events
+            if isinstance(event, yaml.events.AliasEvent) or getattr(event, "anchor", None)
+        ),
+        None,
+    )
+    if anchored_event is not None:
+        line_number = anchored_event.start_mark.line + 1
+        issues.append(
+            Issue(
+                "agents.unsafe",
+                f"{relative}:{line_number}: anchors and aliases are not allowed",
+            )
+        )
+        return
+
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        line_number = (mark.line + 1) if mark is not None else 1
+        issues.append(Issue("agents.syntax", f"{relative}:{line_number}: invalid YAML"))
+        return
+
+    mapping_tag = yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG
+    scalar_tag = yaml.resolver.BaseResolver.DEFAULT_SCALAR_TAG
+    if not isinstance(root, yaml.nodes.MappingNode) or root.tag != mapping_tag:
+        issues.append(Issue("agents.syntax", f"{relative}: expected mapping"))
+        return
+
+    sections: dict[str, yaml.nodes.Node] = {}
+    for key_node, value_node in root.value:
+        if not isinstance(key_node, yaml.nodes.ScalarNode) or key_node.tag != scalar_tag:
+            line_number = key_node.start_mark.line + 1
+            issues.append(Issue("agents.syntax", f"{relative}:{line_number}: expected string key"))
             continue
-        top = re.fullmatch(r"([a-z_][a-z0-9_]*):", line)
-        if top:
-            current = top.group(1)
-            if current in sections:
-                issues.append(Issue("agents.duplicate_key", f"{relative}: {current}"))
-            sections.setdefault(current, {})
+        key = key_node.value
+        if key in sections:
+            issues.append(Issue("agents.duplicate_key", f"{relative}: {key}"))
             continue
-        nested = re.fullmatch(r"  ([a-z_][a-z0-9_]*):[ \t]*(.+)", line)
-        if current is None or not nested:
-            issues.append(Issue("agents.syntax", f"{relative}:{line_number}"))
-            continue
-        key, value = nested.groups()
-        if key in sections[current]:
-            issues.append(Issue("agents.duplicate_key", f"{relative}: {current}.{key}"))
-        else:
-            sections[current][key] = value.strip()
+        sections[key] = value_node
 
     for section in sorted(set(sections) - {"interface", "policy"}):
         issues.append(Issue("agents.unknown_section", f"{relative}: {section}"))
 
-    interface = sections.get("interface", {})
+    for section in ("interface", "policy"):
+        if section not in sections:
+            issues.append(Issue("agents.missing_section", f"{relative}: {section}"))
+
+    interface_node = sections.get("interface")
+    interface: dict[str, yaml.nodes.Node] = {}
+    if interface_node is not None:
+        if not isinstance(interface_node, yaml.nodes.MappingNode) or interface_node.tag != mapping_tag:
+            line_number = interface_node.start_mark.line + 1
+            issues.append(Issue("agents.type", f"{relative}:{line_number}: interface must be mapping"))
+        else:
+            for key_node, value_node in interface_node.value:
+                if not isinstance(key_node, yaml.nodes.ScalarNode) or key_node.tag != scalar_tag:
+                    line_number = key_node.start_mark.line + 1
+                    issues.append(Issue("agents.syntax", f"{relative}:{line_number}: expected string key"))
+                    continue
+                key = key_node.value
+                if key in interface:
+                    issues.append(Issue("agents.duplicate_key", f"{relative}: interface.{key}"))
+                    continue
+                interface[key] = value_node
+
     for key in sorted(set(interface) - ALLOWED_INTERFACE_KEYS):
         issues.append(Issue("agents.unknown_key", f"{relative}: interface.{key}"))
     for key in ("display_name", "short_description", "default_prompt"):
@@ -206,12 +241,26 @@ def _validate_agents(text: str, issues: list[Issue]) -> None:
             issues.append(Issue("agents.missing_key", f"{relative}: interface.{key}"))
 
     decoded: dict[str, str] = {}
-    for key, raw in sorted(interface.items()):
-        value = _decode_quoted_yaml_string(raw)
-        if value is None:
+    for key, value_node in sorted(interface.items()):
+        if value_node.tag not in {
+            scalar_tag,
+            yaml.resolver.BaseResolver.DEFAULT_SEQUENCE_TAG,
+            yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+            "tag:yaml.org,2002:bool",
+            "tag:yaml.org,2002:null",
+            "tag:yaml.org,2002:int",
+            "tag:yaml.org,2002:float",
+            "tag:yaml.org,2002:timestamp",
+        }:
+            line_number = value_node.start_mark.line + 1
+            issues.append(Issue("agents.unsafe", f"{relative}:{line_number}: unsafe YAML tag"))
+        elif not isinstance(value_node, yaml.nodes.ScalarNode) or value_node.tag != scalar_tag:
+            line_number = value_node.start_mark.line + 1
+            issues.append(Issue("agents.type", f"{relative}:{line_number}: interface.{key} must be string"))
+        elif value_node.style not in {'"', "'"}:
             issues.append(Issue("agents.string_unquoted", f"{relative}: interface.{key}"))
         else:
-            decoded[key] = value
+            decoded[key] = value_node.value
 
     short_description = decoded.get("short_description")
     if short_description is not None and not 25 <= len(short_description) <= 64:
@@ -225,13 +274,34 @@ def _validate_agents(text: str, issues: list[Issue]) -> None:
             )
         )
 
-    policy = sections.get("policy", {})
+    policy_node = sections.get("policy")
+    policy: dict[str, yaml.nodes.Node] = {}
+    if policy_node is not None:
+        if not isinstance(policy_node, yaml.nodes.MappingNode) or policy_node.tag != mapping_tag:
+            line_number = policy_node.start_mark.line + 1
+            issues.append(Issue("agents.type", f"{relative}:{line_number}: policy must be mapping"))
+        else:
+            for key_node, value_node in policy_node.value:
+                if not isinstance(key_node, yaml.nodes.ScalarNode) or key_node.tag != scalar_tag:
+                    line_number = key_node.start_mark.line + 1
+                    issues.append(Issue("agents.syntax", f"{relative}:{line_number}: expected string key"))
+                    continue
+                key = key_node.value
+                if key in policy:
+                    issues.append(Issue("agents.duplicate_key", f"{relative}: policy.{key}"))
+                    continue
+                policy[key] = value_node
+
     for key in sorted(set(policy) - {"allow_implicit_invocation"}):
         issues.append(Issue("agents.unknown_key", f"{relative}: policy.{key}"))
     implicit = policy.get("allow_implicit_invocation")
     if implicit is None:
         issues.append(Issue("agents.missing_key", f"{relative}: policy.allow_implicit_invocation"))
-    elif implicit != "true":
+    elif (
+        not isinstance(implicit, yaml.nodes.ScalarNode)
+        or implicit.tag != "tag:yaml.org,2002:bool"
+        or implicit.value != "true"
+    ):
         issues.append(Issue("agents.implicit_invocation", f"{relative}: expected true"))
 
 
@@ -250,10 +320,17 @@ def _validate_links(root: Path, text: str, issues: list[Issue]) -> None:
         raw_target = _markdown_target(match.group(1))
         if not raw_target or raw_target.startswith("#"):
             continue
-        parsed = urlsplit(raw_target)
+        try:
+            parsed = urlsplit(raw_target)
+        except ValueError:
+            issues.append(Issue("link.invalid_path", f"{relative}: {raw_target}"))
+            continue
         if parsed.scheme in {"http", "https", "mailto"}:
             continue
         target = unquote(parsed.path)
+        if "\x00" in target:
+            issues.append(Issue("link.invalid_path", f"{relative}: {raw_target}"))
+            continue
         if (
             parsed.scheme
             or Path(target).is_absolute()
@@ -262,13 +339,22 @@ def _validate_links(root: Path, text: str, issues: list[Issue]) -> None:
         ):
             issues.append(Issue("link.absolute", f"{relative}: {raw_target}"))
             continue
-        resolved = (resolved_root / target).resolve()
+        try:
+            resolved = (resolved_root / target).resolve()
+        except (OSError, ValueError):
+            issues.append(Issue("link.invalid_path", f"{relative}: {raw_target}"))
+            continue
         try:
             resolved.relative_to(resolved_root)
         except ValueError:
             issues.append(Issue("link.outside_root", f"{relative}: {raw_target}"))
             continue
-        if not resolved.is_file():
+        try:
+            exists = resolved.is_file()
+        except (OSError, ValueError):
+            issues.append(Issue("link.invalid_path", f"{relative}: {raw_target}"))
+            continue
+        if not exists:
             issues.append(Issue("link.missing", f"{relative}: {raw_target}"))
 
 

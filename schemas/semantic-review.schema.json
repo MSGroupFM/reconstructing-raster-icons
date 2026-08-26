@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reconstructing-raster-icons.local/schemas/semantic-review/1.0.0",
+  "title": "Semantic review 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_kind", "schema_version", "model_version", "run_id", "reviewed_at", "reviewer", "gates", "warnings"],
+  "properties": {
+    "schema_kind": {"const": "semantic-review"},
+    "schema_version": {"const": "1.0.0"},
+    "model_version": {"const": "1.0.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "reviewer": {"type": "string", "minLength": 1},
+    "gates": {"$ref": "#/$defs/semantic_gates"},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "semantic_gates": {
+      "type": "array", "minItems": 7, "maxItems": 7,
+      "items": {"$ref": "#/$defs/gate"},
+      "allOf": [
+        {"contains": {"properties": {"gate_id": {"const": "semantic.components.complete"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "semantic.connectivity"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "semantic.editability"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "semantic.visual_meaning"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "semantic.target_sizes"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "semantic.overlay_diff"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"gate_id": {"const": "semantic.ambiguities"}}}, "minContains": 1, "maxContains": 1}
+      ]
+    },
+    "gate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["gate_id", "kind", "state", "evidence", "evaluator", "evaluated_at"],
+      "properties": {
+        "gate_id": {"enum": ["semantic.components.complete", "semantic.connectivity", "semantic.editability", "semantic.visual_meaning", "semantic.target_sizes", "semantic.overlay_diff", "semantic.ambiguities"]},
+        "kind": {"const": "semantic"},
+        "state": {"enum": ["pass", "fail", "not_evaluated"]},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "evaluator": {"type": "string", "minLength": 1},
+        "evaluated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["basis"],
+      "properties": {"basis": {"type": "string", "minLength": 1}, "artifact_id": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    }
+  }
+}

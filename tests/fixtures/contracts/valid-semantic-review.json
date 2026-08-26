@@ -1,0 +1,18 @@
+{
+  "schema_kind": "semantic-review",
+  "schema_version": "1.0.0",
+  "model_version": "1.0.0",
+  "run_id": "run-1",
+  "reviewed_at": "2026-08-26T00:00:00Z",
+  "reviewer": "reviewer",
+  "gates": [
+    {"gate_id": "semantic.components.complete", "kind": "semantic", "state": "pass", "evidence": {"basis": "checked"}, "evaluator": "reviewer", "evaluated_at": "2026-08-26T00:00:00Z"},
+    {"gate_id": "semantic.connectivity", "kind": "semantic", "state": "pass", "evidence": {"basis": "checked"}, "evaluator": "reviewer", "evaluated_at": "2026-08-26T00:00:00Z"},
+    {"gate_id": "semantic.editability", "kind": "semantic", "state": "pass", "evidence": {"basis": "checked"}, "evaluator": "reviewer", "evaluated_at": "2026-08-26T00:00:00Z"},
+    {"gate_id": "semantic.visual_meaning", "kind": "semantic", "state": "pass", "evidence": {"basis": "checked"}, "evaluator": "reviewer", "evaluated_at": "2026-08-26T00:00:00Z"},
+    {"gate_id": "semantic.target_sizes", "kind": "semantic", "state": "pass", "evidence": {"basis": "checked"}, "evaluator": "reviewer", "evaluated_at": "2026-08-26T00:00:00Z"},
+    {"gate_id": "semantic.overlay_diff", "kind": "semantic", "state": "pass", "evidence": {"basis": "checked"}, "evaluator": "reviewer", "evaluated_at": "2026-08-26T00:00:00Z"},
+    {"gate_id": "semantic.ambiguities", "kind": "semantic", "state": "pass", "evidence": {"basis": "checked"}, "evaluator": "reviewer", "evaluated_at": "2026-08-26T00:00:00Z"}
+  ],
+  "warnings": []
+}

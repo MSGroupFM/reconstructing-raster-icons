@@ -1,0 +1,18 @@
+{
+  "schema_kind": "reconstruction-map-draft",
+  "schema_version": "1.0.0",
+  "map_revision": 1,
+  "created_at": "2026-08-26T00:00:00Z",
+  "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "accuracy_target": 98,
+  "accuracy_confirmed": true,
+  "normalization": {"foreground_polarity": "dark", "background_decision": "transparent", "threshold": 0.5, "estimator_basis": "automatic"},
+  "viewport": {"aspect_ratio": "1:1", "grid": 64, "view_box": [0, 0, 64, 64], "fit_mode": "contain", "alignment": "center"},
+  "target_sizes": [128, 64, 32, 24],
+  "components": [{"component_id": "mark", "svg_id": "mark", "paint_type": "fill", "mandatory": true, "weight": 1, "source_mask_path": "masks/mark.png", "geometry": "polygon"}],
+  "topology_facts": [],
+  "semantic_facts": [],
+  "geometry_constraints": [],
+  "user_confirmations": [{"decision": "accuracy target", "confirmed": true, "confirmed_at": "2026-08-26T00:00:00Z"}],
+  "refinement_limit": 8
+}

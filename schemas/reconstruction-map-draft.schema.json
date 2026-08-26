@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reconstructing-raster-icons.local/schemas/reconstruction-map-draft/1.0.0",
+  "title": "Reconstruction map draft 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_kind", "schema_version", "map_revision", "created_at", "source_sha256", "accuracy_target", "accuracy_confirmed", "normalization", "viewport", "target_sizes", "components", "topology_facts", "semantic_facts", "geometry_constraints", "user_confirmations", "refinement_limit"],
+  "properties": {
+    "schema_kind": {"const": "reconstruction-map-draft"},
+    "schema_version": {"const": "1.0.0"},
+    "map_revision": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "source_sha256": {"$ref": "#/$defs/hash"},
+    "accuracy_target": {"type": "number", "exclusiveMinimum": 0, "maximum": 100, "multipleOf": 0.01},
+    "accuracy_confirmed": {"const": true},
+    "normalization": {"$ref": "#/$defs/normalization"},
+    "viewport": {"$ref": "#/$defs/viewport"},
+    "target_sizes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+    "components": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/component"}},
+    "topology_facts": {"type": "array", "items": {"$ref": "#/$defs/topology_fact"}},
+    "semantic_facts": {"type": "array", "items": {"$ref": "#/$defs/semantic_fact"}},
+    "geometry_constraints": {"type": "array", "items": {"$ref": "#/$defs/geometry_constraint"}},
+    "user_confirmations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/confirmation"}},
+    "refinement_limit": {"type": "integer", "minimum": 1, "maximum": 20}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "normalization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["foreground_polarity", "background_decision", "threshold", "estimator_basis"],
+      "properties": {
+        "foreground_polarity": {"enum": ["dark", "light"]},
+        "background_decision": {"enum": ["transparent", "opaque", "explicit"]},
+        "threshold": {"const": 0.5},
+        "estimator_basis": {"enum": ["automatic", "explicit_override"]}
+      }
+    },
+    "viewport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["aspect_ratio", "grid", "view_box", "fit_mode", "alignment"],
+      "properties": {
+        "aspect_ratio": {"type": "string", "pattern": "^(?:1:1|4:3|3:4|3:2|2:3|16:9|9:16|[1-9][0-6]?:[1-9][0-6]?)$"},
+        "grid": {"type": "integer", "enum": [16, 20, 24, 32, 48, 64, 128, 256, 512, 1024]},
+        "view_box": {"type": "array", "prefixItems": [{"const": 0}, {"const": 0}, {"type": "number", "minimum": 1}, {"type": "number", "minimum": 1}], "items": false},
+        "fit_mode": {"enum": ["contain", "cover", "stretch"]},
+        "alignment": {"enum": ["center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right"]}
+      }
+    },
+    "component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component_id", "svg_id", "paint_type", "mandatory", "weight", "source_mask_path", "geometry"],
+      "properties": {
+        "component_id": {"$ref": "#/$defs/id"},
+        "svg_id": {"$ref": "#/$defs/id"},
+        "paint_type": {"enum": ["fill", "stroke", "mixed"]},
+        "mandatory": {"type": "boolean"},
+        "weight": {"type": "number", "exclusiveMinimum": 0},
+        "source_mask_path": {"type": "string", "minLength": 1},
+        "geometry": {"enum": ["line", "circle", "ellipse", "polygon", "organic", "mixed"]}
+      }
+    },
+    "topology_fact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relation", "subject", "object"],
+      "properties": {"relation": {"enum": ["contains", "overlaps", "touches", "paint_order"]}, "subject": {"$ref": "#/$defs/id"}, "object": {"$ref": "#/$defs/id"}}
+    },
+    "semantic_fact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relation", "subject", "object"],
+      "properties": {"relation": {"const": "connects"}, "subject": {"$ref": "#/$defs/id"}, "object": {"$ref": "#/$defs/id"}}
+    },
+    "geometry_constraint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component_id", "kind", "tolerance"],
+      "properties": {"component_id": {"$ref": "#/$defs/id"}, "kind": {"enum": ["endpoint", "radial", "symmetry", "stroke", "intersection", "gap"]}, "tolerance": {"type": "number", "minimum": 0}}
+    },
+    "confirmation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["decision", "confirmed", "confirmed_at"],
+      "properties": {"decision": {"type": "string", "minLength": 1}, "confirmed": {"const": true}, "confirmed_at": {"type": "string", "format": "date-time"}}
+    }
+  }
+}

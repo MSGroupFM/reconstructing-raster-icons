@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reconstructing-raster-icons.local/schemas/acceptance-report/1.0.0",
+  "title": "Acceptance report 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_kind", "schema_version", "model_version", "run_id", "created_at", "status", "accuracy_target", "iteration", "limit_state", "target_met", "canonical_environment", "hashes", "normalization", "viewport", "metrics", "components", "topology_facts", "uncertainty", "gates", "warnings", "limitations", "artifacts"],
+  "properties": {
+    "schema_kind": {"const": "acceptance-report"},
+    "schema_version": {"const": "1.0.0"},
+    "model_version": {"const": "1.0.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["invalid_input", "runtime_error", "non_canonical", "not_accepted", "incomplete", "accepted"]},
+    "accuracy_target": {"type": "number", "exclusiveMinimum": 0, "maximum": 100, "multipleOf": 0.01},
+    "iteration": {"type": "integer", "minimum": 0},
+    "limit_state": {"enum": ["active", "reached", "stalled"]},
+    "target_met": {"type": "boolean"},
+    "canonical_environment": {"type": "boolean"},
+    "hashes": {"$ref": "#/$defs/hashes"},
+    "normalization": {"$ref": "#/$defs/normalization"},
+    "viewport": {"$ref": "#/$defs/viewport"},
+    "metrics": {"$ref": "#/$defs/metrics"},
+    "components": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/component_metric"}},
+    "topology_facts": {"type": "array", "items": {"$ref": "#/$defs/topology_fact"}},
+    "uncertainty": {"$ref": "#/$defs/uncertainty"},
+    "gates": {"$ref": "#/$defs/gates"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/artifact"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "accepted"}}},
+      "then": {"properties": {"target_met": {"const": true}, "canonical_environment": {"const": true}, "gates": {"items": {"properties": {"state": {"const": "pass"}}}}}}
+    }
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "hashes": {"type": "object", "additionalProperties": false, "required": ["source", "map", "reference_mask", "uncertainty_mask", "candidate", "diagnostics"], "properties": {"source": {"$ref": "#/$defs/hash"}, "map": {"$ref": "#/$defs/hash"}, "reference_mask": {"$ref": "#/$defs/hash"}, "uncertainty_mask": {"$ref": "#/$defs/hash"}, "candidate": {"$ref": "#/$defs/hash"}, "diagnostics": {"$ref": "#/$defs/hash"}}},
+    "normalization": {"type": "object", "additionalProperties": false, "required": ["foreground_polarity", "background_decision", "threshold"], "properties": {"foreground_polarity": {"enum": ["dark", "light"]}, "background_decision": {"enum": ["transparent", "opaque", "explicit"]}, "threshold": {"const": 0.5}}},
+    "viewport": {"type": "object", "additionalProperties": false, "required": ["view_box", "fit_mode", "alignment"], "properties": {"view_box": {"type": "array", "prefixItems": [{"const": 0}, {"const": 0}, {"type": "number", "minimum": 1}, {"type": "number", "minimum": 1}], "items": false}, "fit_mode": {"enum": ["contain", "cover", "stretch"]}, "alignment": {"enum": ["center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right"]}}},
+    "score": {"type": "number", "minimum": 0, "maximum": 100},
+    "metrics": {"type": "object", "additionalProperties": false, "required": ["silhouette_raw", "silhouette", "contour_raw", "contour", "layout_raw", "layout", "topology_raw", "topology", "composite_raw", "composite"], "properties": {"silhouette_raw": {"$ref": "#/$defs/score"}, "silhouette": {"$ref": "#/$defs/score"}, "contour_raw": {"$ref": "#/$defs/score"}, "contour": {"$ref": "#/$defs/score"}, "layout_raw": {"$ref": "#/$defs/score"}, "layout": {"$ref": "#/$defs/score"}, "topology_raw": {"$ref": "#/$defs/score"}, "topology": {"$ref": "#/$defs/score"}, "composite_raw": {"$ref": "#/$defs/score"}, "composite": {"$ref": "#/$defs/score"}}},
+    "component_metric": {"type": "object", "additionalProperties": false, "required": ["component_id", "layout_score"], "properties": {"component_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}, "layout_score": {"$ref": "#/$defs/score"}}},
+    "topology_fact": {"type": "object", "additionalProperties": false, "required": ["relation", "subject", "object"], "properties": {"relation": {"enum": ["contains", "overlaps", "touches", "paint_order"]}, "subject": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}, "object": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}}},
+    "uncertainty": {"type": "object", "additionalProperties": false, "required": ["pixels", "canvas_fraction", "bbox_fraction"], "properties": {"pixels": {"type": "integer", "minimum": 0}, "canvas_fraction": {"type": "number", "minimum": 0, "maximum": 0.05}, "bbox_fraction": {"type": "number", "minimum": 0, "maximum": 1}}},
+    "gates": {"type": "array", "minItems": 16, "maxItems": 16, "items": {"$ref": "#/$defs/gate"}, "allOf": [
+      {"contains": {"properties": {"gate_id": {"const": "auto.svg.safe_subset"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.svg.render"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.integrity.hashes"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.components.present"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.topology.facts"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.viewport.geometry"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.primitives.constraints"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.paths.integrity"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "auto.style.monochrome"}}}, "minContains": 1, "maxContains": 1},
+      {"contains": {"properties": {"gate_id": {"const": "semantic.components.complete"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "semantic.connectivity"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "semantic.editability"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "semantic.visual_meaning"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "semantic.target_sizes"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "semantic.overlay_diff"}}}, "minContains": 1, "maxContains": 1}, {"contains": {"properties": {"gate_id": {"const": "semantic.ambiguities"}}}, "minContains": 1, "maxContains": 1}
+    ]},
+    "gate": {"type": "object", "additionalProperties": false, "required": ["gate_id", "kind", "state", "evidence", "evaluator", "evaluated_at"], "properties": {"gate_id": {"enum": ["auto.svg.safe_subset", "auto.svg.render", "auto.integrity.hashes", "auto.components.present", "auto.topology.facts", "auto.viewport.geometry", "auto.primitives.constraints", "auto.paths.integrity", "auto.style.monochrome", "semantic.components.complete", "semantic.connectivity", "semantic.editability", "semantic.visual_meaning", "semantic.target_sizes", "semantic.overlay_diff", "semantic.ambiguities"]}, "kind": {"enum": ["automatic", "semantic"]}, "state": {"enum": ["pass", "fail", "not_evaluated"]}, "evidence": {"$ref": "#/$defs/evidence"}, "evaluator": {"type": "string", "minLength": 1}, "evaluated_at": {"type": "string", "format": "date-time"}}, "allOf": [
+      {"if": {"properties": {"gate_id": {"pattern": "^auto\\."}}}, "then": {"properties": {"kind": {"const": "automatic"}, "state": {"enum": ["pass", "fail"]}}}},
+      {"if": {"properties": {"gate_id": {"pattern": "^semantic\\."}}}, "then": {"properties": {"kind": {"const": "semantic"}, "state": {"enum": ["pass", "fail", "not_evaluated"]}}}}
+    ]},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["basis"], "properties": {"basis": {"type": "string", "minLength": 1}, "artifact_id": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/hash"}}},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["logical_id", "sha256", "retention"], "properties": {"logical_id": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/hash"}, "retention": {"enum": ["retained", "deleted"]}}}
+  }
+}

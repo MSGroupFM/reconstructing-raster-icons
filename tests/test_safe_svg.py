@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -78,6 +79,13 @@ class SafeSvgTests(unittest.TestCase):
             '<image href="https://example.test/x"/></svg>'
         )
 
+    def test_rejects_forbidden_scheme_after_character_reference_decode(self) -> None:
+        self.assert_rejected(
+            '<svg xmlns="http://www.w3.org/2000/svg">'
+            '<title>java&#x73;cript:alert</title><rect width="1" height="1"/>'
+            "</svg>"
+        )
+
     def test_rejects_all_forbidden_raw_constructs(self) -> None:
         payloads = {
             "doctype": "<!DOCTYPE svg><svg/>",
@@ -151,6 +159,47 @@ class SafeSvgTests(unittest.TestCase):
         payload += b"x" * (5 * 1024 * 1024)
         payload += b"</desc></svg>"
         self.assert_rejected(payload)
+
+    def test_reads_replaced_regular_path_from_the_single_open_descriptor(self) -> None:
+        original = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>'
+        replacement = '<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>'
+        path = self.write_svg(original)
+        real_open = os.open
+        opened = 0
+
+        def replace_after_open(source: os.PathLike[str] | str, flags: int, mode: int = 0o777) -> int:
+            nonlocal opened
+            descriptor = real_open(source, flags, mode)
+            opened += 1
+            path.unlink()
+            path.write_text(replacement, encoding="utf-8")
+            return descriptor
+
+        with patch.object(os, "open", side_effect=replace_after_open):
+            document = validate_svg(path)
+
+        self.assertEqual(opened, 1)
+        self.assertEqual(document.xml_bytes, original.encode("utf-8"))
+        self.assertEqual(path.read_text(encoding="utf-8"), replacement)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO fixture requires POSIX")
+    def test_rejects_symlink_and_fifo_without_blocking(self) -> None:
+        regular = self.write_svg('<svg xmlns="http://www.w3.org/2000/svg"/>')
+        symlink = regular.with_name("linked.svg")
+        fifo = regular.with_name("candidate.fifo")
+        symlink.symlink_to(regular)
+        os.mkfifo(fifo)
+        with self.assertRaises(SecurityViolation):
+            validate_svg(symlink)
+        with self.assertRaises(SecurityViolation):
+            validate_svg(fifo)
+
+    def test_fails_closed_without_safe_no_follow_or_nonblocking_open(self) -> None:
+        path = self.write_svg('<svg xmlns="http://www.w3.org/2000/svg"/>')
+        for flag_name in ("O_NOFOLLOW", "O_NONBLOCK"):
+            with self.subTest(flag=flag_name), patch.object(os, flag_name, 0):
+                with self.assertRaises(SecurityViolation):
+                    validate_svg(path)
 
 
 if __name__ == "__main__":

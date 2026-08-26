@@ -2,13 +2,27 @@
   "lock_version": 1,
   "acceptance_model_version": "1.0.0",
   "node_version": "22.14.0",
+  "node_binaries": {
+    "darwin-arm64": {
+      "package": "node-bin-darwin-arm64",
+      "package_version": "22.14.0",
+      "package_integrity": "sha512-vXh85M8hpgFnaX/q8fBhsH+oNH5FtN6sEczeR0vDel87NDHjF3mF+9Ffx60SAQnI9Akq93WFkmEp8FQR8YbHQQ==",
+      "executable_sha256": "e2d4915d03eda6a2f00a09920e7eeb7a04ad123f9aaad61b1481179fe1bf50e0"
+    },
+    "linux-x64": {
+      "package": "node-linux-x64",
+      "package_version": "22.14.0",
+      "package_integrity": "sha512-R9k0h0zCZkX4/rlJbwS2c/CaOlmbAz3FkcQnQTJneQgJFaMntb8GVT64oArZEvrnzSyck8tGpcss6u3nT7hqxg==",
+      "executable_sha256": "1abce2374a485bddae3c27b17a3e3143e2780232026e627c4fe74ddde3f380a1"
+    }
+  },
   "package": "@resvg/resvg-wasm",
   "package_version": "2.6.2",
   "package_integrity": "sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw==",
   "loader_file": "node_modules/@resvg/resvg-wasm/index.mjs",
   "loader_sha256": "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1",
   "runner_file": "scripts/render_svg.mjs",
-  "runner_sha256": "12c6d7f3d44702be7070913097dcb138959a9511f99c20dc51710f5b272525da",
+  "runner_sha256": "b3ed96f1337f3afec3b623c71dbb125fd888b8deb698e605983e12b54c5b3723",
   "wasm_file": "node_modules/@resvg/resvg-wasm/index_bg.wasm",
   "wasm_sha256": "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70",
   "license": "MPL-2.0",

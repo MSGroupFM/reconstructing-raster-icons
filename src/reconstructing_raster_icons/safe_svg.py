@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 import re
+import stat
 from xml.etree.ElementTree import Element, ParseError
 
 from defusedxml import ElementTree as DefusedElementTree
@@ -112,19 +114,39 @@ class SafeSvgDocument:
 
 def _read_bounded(path: Path) -> bytes:
     source = Path(path)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    nonblocking = getattr(os, "O_NONBLOCK", 0)
+    if not no_follow or not nonblocking:
+        raise SecurityViolation("safe non-following SVG open is unavailable")
+    flags = os.O_RDONLY | no_follow | nonblocking | getattr(os, "O_CLOEXEC", 0)
+    descriptor = -1
     try:
-        if not source.is_file() or source.is_symlink():
+        descriptor = os.open(source, flags)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
             raise SecurityViolation("SVG input must be a regular, non-symlink file")
-        if source.stat().st_size > MAX_SVG_BYTES:
+        if metadata.st_size > MAX_SVG_BYTES:
             raise SecurityViolation("SVG input exceeds 5 MiB")
-        with source.open("rb") as stream:
-            data = stream.read(MAX_SVG_BYTES)
-            if stream.read(1):
-                raise SecurityViolation("SVG input exceeds 5 MiB")
+        if not getattr(os, "O_CLOEXEC", 0):
+            os.set_inheritable(descriptor, False)
+        chunks: list[bytes] = []
+        remaining = MAX_SVG_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > MAX_SVG_BYTES:
+            raise SecurityViolation("SVG input exceeds 5 MiB")
     except SecurityViolation:
         raise
     except OSError as error:
         raise SecurityViolation("SVG input could not be read safely") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if not data:
         raise SecurityViolation("SVG input is empty")
     return data
@@ -381,6 +403,9 @@ def _validate_tree(root: Element) -> tuple[int, int]:
         children = list(node)
         if children and element not in _CONTAINER_ELEMENTS:
             raise SecurityViolation(f"element {element!r} cannot contain elements")
+        for decoded_text in (node.text, node.tail):
+            if decoded_text and _FORBIDDEN_SCHEME.search(decoded_text.encode("utf-8")):
+                raise SecurityViolation("URI schemes are forbidden in decoded SVG text")
         if element not in _TEXT_ELEMENTS and node.text and node.text.strip():
             raise SecurityViolation("visible text is forbidden outside title and desc")
         if node.tail and node.tail.strip():

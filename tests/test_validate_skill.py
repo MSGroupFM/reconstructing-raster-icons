@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+VALIDATOR = ROOT / "scripts" / "validate_skill.py"
+
+
+class SkillValidatorTests(unittest.TestCase):
+    def extract_skill(self, destination: Path) -> None:
+        shutil.copy2(ROOT / "SKILL.md", destination / "SKILL.md")
+        shutil.copytree(ROOT / "agents", destination / "agents")
+        shutil.copytree(ROOT / "references", destination / "references")
+
+    def run_validator(self, skill_root: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(VALIDATOR), "--path", str(skill_root)],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+    def mutate_skill(self, mutation) -> tuple[subprocess.CompletedProcess[str], str]:
+        with tempfile.TemporaryDirectory(prefix="validate-skill-test-") as temporary:
+            root = Path(temporary)
+            self.extract_skill(root)
+            mutation(root)
+            result = self.run_validator(root)
+            return result, result.stdout + result.stderr
+
+    def test_valid_extracted_skill(self) -> None:
+        result, output = self.mutate_skill(lambda _root: None)
+        self.assertEqual(result.returncode, 0, output)
+        self.assertEqual(result.stdout, "Skill is valid.\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_missing_reference_has_stable_diagnostic(self) -> None:
+        def remove_reference(root: Path) -> None:
+            (root / "references" / "acceptance-model.md").unlink()
+
+        result, output = self.mutate_skill(remove_reference)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "ERROR link.missing: SKILL.md: references/acceptance-model.md\n",
+            output,
+        )
+
+    def test_absolute_link_is_rejected(self) -> None:
+        def add_absolute_link(root: Path) -> None:
+            path = root / "SKILL.md"
+            path.write_text(path.read_text(encoding="utf-8") + "\n[unsafe](/tmp/outside.md)\n", encoding="utf-8")
+
+        result, output = self.mutate_skill(add_absolute_link)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR link.absolute: SKILL.md: /tmp/outside.md\n", output)
+
+    def test_unknown_frontmatter_key_is_rejected(self) -> None:
+        def add_unknown_key(root: Path) -> None:
+            path = root / "SKILL.md"
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace("name: reconstructing-raster-icons\n", "name: reconstructing-raster-icons\nversion: 1\n", 1), encoding="utf-8")
+
+        result, output = self.mutate_skill(add_unknown_key)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR frontmatter.unknown_key: SKILL.md: version\n", output)
+
+    def test_unresolved_placeholder_is_rejected(self) -> None:
+        def add_placeholder(root: Path) -> None:
+            path = root / "references" / "reconstruction-workflow.md"
+            path.write_text(path.read_text(encoding="utf-8") + "\n[TODO: complete this]\n", encoding="utf-8")
+
+        result, output = self.mutate_skill(add_placeholder)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "ERROR placeholder.unresolved: references/reconstruction-workflow.md: [TODO: complete this]\n",
+            output,
+        )
+
+    def test_unquoted_agent_string_is_rejected(self) -> None:
+        def unquote(root: Path) -> None:
+            path = root / "agents" / "openai.yaml"
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace('display_name: "Reconstruct Raster Icons"', "display_name: Reconstruct Raster Icons"), encoding="utf-8")
+
+        result, output = self.mutate_skill(unquote)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR agents.string_unquoted: agents/openai.yaml: interface.display_name\n", output)
+
+    def test_implicit_invocation_must_remain_enabled(self) -> None:
+        def disable(root: Path) -> None:
+            path = root / "agents" / "openai.yaml"
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace("allow_implicit_invocation: true", "allow_implicit_invocation: false"), encoding="utf-8")
+
+        result, output = self.mutate_skill(disable)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR agents.implicit_invocation: agents/openai.yaml: expected true\n", output)
+
+
+if __name__ == "__main__":
+    unittest.main()

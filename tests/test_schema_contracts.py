@@ -373,6 +373,42 @@ class SchemaContractTests(unittest.TestCase):
             }
             validate_document(report, "acceptance-report")
 
+    def test_composite_raw_uses_normative_float64_evaluation(self) -> None:
+        report = accepted_report_fixture()
+        report["accuracy_target"] = 0.01
+        report["metrics"] = {  # type: ignore[index]
+            "silhouette_raw": 9.26,
+            "silhouette": 9.26,
+            "contour_raw": 15,
+            "contour": 15,
+            "layout_raw": 13.9,
+            "layout": 13.9,
+            "topology_raw": 59.15,
+            "topology": 59.15,
+            "composite_raw": 16.666999999999998,
+            "composite": 16.67,
+        }
+        validate_document(report, "acceptance-report")
+
+        report["metrics"]["composite_raw"] = 16.5  # type: ignore[index]
+        report["metrics"]["composite"] = 16.5  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+    def test_failed_topology_gate_records_observed_hole_mismatch(self) -> None:
+        report = accepted_report_fixture()
+        report["status"] = "not_accepted"
+        for gate in report["gates"]:  # type: ignore[index]
+            if gate["gate_id"] == "auto.topology.facts":
+                gate["state"] = "fail"
+        report["topology_nodes"][0]["hole_count"] = 1  # type: ignore[index]
+        validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["topology_nodes"][0]["hole_count"] = 1  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
     def test_topology_nodes_cover_components_once_with_expected_holes(self) -> None:
         report = accepted_report_fixture()
         report["topology_nodes"] = []

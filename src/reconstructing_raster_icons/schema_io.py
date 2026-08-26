@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
@@ -124,20 +125,23 @@ def _validate_acceptance_coherence(report: dict[str, object]) -> None:
         raw_scores[raw_name] = raw_score
 
     expected_composite = (
-        Decimal("0.45") * raw_scores["silhouette_raw"]
-        + Decimal("0.30") * raw_scores["contour_raw"]
-        + Decimal("0.15") * raw_scores["layout_raw"]
-        + Decimal("0.10") * raw_scores["topology_raw"]
+        0.45 * float(raw_scores["silhouette_raw"])
+        + 0.30 * float(raw_scores["contour_raw"])
+        + 0.15 * float(raw_scores["layout_raw"])
+        + 0.10 * float(raw_scores["topology_raw"])
     )
-    if raw_scores["composite_raw"] != expected_composite:
-        raise ValidationError("composite_raw must equal the specified weighted raw metric sum")
+    actual_composite = float(raw_scores["composite_raw"])
+    if not math.isfinite(actual_composite) or not math.isclose(
+        actual_composite, expected_composite, rel_tol=0.0, abs_tol=math.ulp(expected_composite)
+    ):
+        raise ValidationError("composite_raw must equal the specified float64 weighted metric sum")
 
     target_met = raw_scores["composite_raw"] >= _decimal(report["accuracy_target"], "accuracy_target")
     if report["target_met"] != target_met:
         raise ValidationError("target_met must equal composite_raw >= accuracy_target")
 
     _validate_report_canvas(report)
-    _validate_topology_nodes(report)
+    _validate_topology_nodes(report, gates)
 
     has_gate_failure = any(isinstance(gate, dict) and gate.get("state") == "fail" for gate in gates)
     has_semantic_pending = any(
@@ -225,7 +229,7 @@ def _validate_canvas_relationships(viewport: dict[str, object], canvas: dict[str
         raise ValidationError("canonical raster must be derived from the declared aspect ratio at 1024 maximum side")
 
 
-def _validate_topology_nodes(report: dict[str, object]) -> None:
+def _validate_topology_nodes(report: dict[str, object], gates: list[object]) -> None:
     components = report["components"]
     nodes = report["topology_nodes"]
     if not isinstance(components, list) or not isinstance(nodes, list):
@@ -248,9 +252,16 @@ def _validate_topology_nodes(report: dict[str, object]) -> None:
         actual_holes[component_id] = node.get("hole_count")
     if set(actual_holes) != set(expected_holes):
         raise ValidationError("topology nodes must cover every report component exactly once")
-    for component_id, expected_hole_count in expected_holes.items():
-        if actual_holes[component_id] != expected_hole_count:
-            raise ValidationError("topology node hole count must match its component")
+    topology_gate_passed = any(
+        isinstance(gate, dict)
+        and gate.get("gate_id") == "auto.topology.facts"
+        and gate.get("state") == "pass"
+        for gate in gates
+    )
+    if topology_gate_passed:
+        for component_id, expected_hole_count in expected_holes.items():
+            if actual_holes[component_id] != expected_hole_count:
+                raise ValidationError("topology node hole count must match its component when topology passes")
 
 
 def validator_for(schema: object) -> Draft202012Validator:

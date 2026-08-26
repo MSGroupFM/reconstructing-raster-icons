@@ -1,0 +1,126 @@
+{
+  "accuracy_confirmed": true,
+  "accuracy_target": 98.0,
+  "ambiguities": [],
+  "applicable_gates": [
+    "auto.components.present",
+    "semantic.components.complete"
+  ],
+  "canonical_canvas": {
+    "height": 64,
+    "raster_height": 1024,
+    "raster_width": 1024,
+    "width": 64
+  },
+  "components": [
+    {
+      "applicable_gates": [
+        "auto.components.present",
+        "semantic.components.complete"
+      ],
+      "component_id": "lower",
+      "expected_hole_count": 0,
+      "geometry": "polygon",
+      "mandatory": true,
+      "paint_type": "fill",
+      "source_mask_path": "masks/lower.png",
+      "svg_id": "lower",
+      "weight": 1.0
+    },
+    {
+      "applicable_gates": [
+        "auto.components.present",
+        "semantic.components.complete"
+      ],
+      "component_id": "upper",
+      "expected_hole_count": 0,
+      "geometry": "polygon",
+      "mandatory": true,
+      "paint_type": "fill",
+      "source_mask_path": "masks/upper.png",
+      "svg_id": "upper",
+      "weight": 1.0
+    }
+  ],
+  "created_at": "2026-08-26T00:00:00Z",
+  "foreground_color": "currentColor",
+  "geometry_constraints": {
+    "endpoints": [],
+    "intentional_intersections": [
+      {
+        "first": "lower",
+        "second": "upper"
+      }
+    ],
+    "lines": [],
+    "minimum_intentional_gaps": [],
+    "orthogonality": [],
+    "parallelism": [],
+    "radial": [],
+    "strokes": [],
+    "symmetry": []
+  },
+  "map_revision": 1,
+  "normalization": {
+    "background_decision": "opaque",
+    "estimator": {
+      "background_luminance": 1,
+      "border_variance": 0,
+      "contrast": 1,
+      "dark_contrast": 1,
+      "dark_foreground_luminance": 0,
+      "light_contrast": 0,
+      "light_foreground_luminance": 1
+    },
+    "estimator_basis": "automatic",
+    "foreground_polarity": "dark",
+    "threshold": 0.5
+  },
+  "refinement_limit": 8,
+  "schema_kind": "reconstruction-map-draft",
+  "schema_version": "1.0.0",
+  "semantic_facts": [],
+  "source_sha256": "b799f5c97de0f2ac4a14aa011143fcef3a021691c49a9e6436b0efe4dcad07fb",
+  "target_sizes": [
+    128,
+    64,
+    32,
+    24
+  ],
+  "topology_facts": [
+    {
+      "object": "upper",
+      "relation": "overlaps",
+      "subject": "lower"
+    },
+    {
+      "object": "upper",
+      "relation": "touches",
+      "subject": "lower"
+    },
+    {
+      "object": "upper",
+      "relation": "paint_order",
+      "subject": "lower"
+    }
+  ],
+  "user_confirmations": [
+    {
+      "confirmed": true,
+      "confirmed_at": "2026-08-26T00:00:00Z",
+      "decision": "accuracy target"
+    }
+  ],
+  "viewport": {
+    "alignment": "center",
+    "aspect_ratio": "1:1",
+    "fit_mode": "contain",
+    "grid": 64,
+    "view_box": [
+      0,
+      0,
+      64,
+      64
+    ]
+  }
+}

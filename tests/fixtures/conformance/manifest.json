@@ -1,0 +1,93 @@
+{
+  "corpus_version": "1.0.0",
+  "fixture_classes": [
+    "analytic-fill",
+    "open-stroke-caps-joins",
+    "ring-hole-nested-topology",
+    "cleaned-organic-curve",
+    "noisy-antialiasing",
+    "non-square-16x9",
+    "impossible-target-iteration-stall",
+    "meaningful-multicolor-rejection",
+    "missing-component-high-silhouette",
+    "overlap-occlusion-enclosure",
+    "uncertainty-boundary-no-artificial-contour",
+    "status-exit-precedence",
+    "ratio-extremes",
+    "malicious-svg-raster"
+  ],
+  "metric_cases": [
+    {
+      "candidate": "conformance/metrics/analytic-fill-identity-candidate.png",
+      "name": "analytic-fill-identity",
+      "reference": "conformance/metrics/analytic-fill-identity-reference.png",
+      "uncertainty": "conformance/metrics/analytic-fill-identity-uncertainty.png"
+    },
+    {
+      "candidate": "conformance/metrics/analytic-fill-shifted-candidate.png",
+      "name": "analytic-fill-shifted",
+      "reference": "conformance/metrics/analytic-fill-shifted-reference.png",
+      "uncertainty": "conformance/metrics/analytic-fill-shifted-uncertainty.png"
+    },
+    {
+      "candidate": "conformance/metrics/organic-cleaned-candidate.png",
+      "name": "organic-cleaned",
+      "reference": "conformance/metrics/organic-cleaned-reference.png",
+      "uncertainty": "conformance/metrics/organic-cleaned-uncertainty.png"
+    }
+  ],
+  "pipeline_cases": [
+    {
+      "iterations": 1,
+      "name": "analytic-fill",
+      "path": "conformance/analytic-fill"
+    },
+    {
+      "iterations": 1,
+      "name": "open-stroke",
+      "path": "conformance/open-stroke"
+    },
+    {
+      "iterations": 1,
+      "name": "ring-hole",
+      "path": "conformance/ring-hole"
+    },
+    {
+      "iterations": 1,
+      "name": "organic-curve",
+      "path": "conformance/organic-curve"
+    },
+    {
+      "iterations": 1,
+      "name": "noisy-antialias",
+      "path": "conformance/noisy-antialias"
+    },
+    {
+      "iterations": 1,
+      "name": "widescreen-16x9",
+      "path": "conformance/widescreen-16x9"
+    },
+    {
+      "iterations": 4,
+      "name": "impossible-target",
+      "path": "conformance/impossible-target"
+    },
+    {
+      "iterations": 1,
+      "name": "multicolor-rejection",
+      "path": "conformance/multicolor-rejection"
+    },
+    {
+      "iterations": 1,
+      "name": "missing-component",
+      "path": "conformance/missing-component"
+    },
+    {
+      "iterations": 1,
+      "name": "occlusion-overlap",
+      "path": "conformance/occlusion-overlap"
+    }
+  ],
+  "provenance": "synthetic-original",
+  "renderer_mode": "deterministic-test-contract-double"
+}

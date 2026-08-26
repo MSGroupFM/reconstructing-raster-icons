@@ -1,0 +1,111 @@
+{
+  "accuracy_confirmed": true,
+  "accuracy_target": 98.0,
+  "ambiguities": [],
+  "applicable_gates": [
+    "auto.components.present",
+    "semantic.components.complete"
+  ],
+  "canonical_canvas": {
+    "height": 64,
+    "raster_height": 1024,
+    "raster_width": 1024,
+    "width": 64
+  },
+  "components": [
+    {
+      "applicable_gates": [
+        "auto.components.present",
+        "semantic.components.complete"
+      ],
+      "component_id": "ring",
+      "expected_hole_count": 1,
+      "geometry": "polygon",
+      "mandatory": true,
+      "paint_type": "fill",
+      "source_mask_path": "masks/ring.png",
+      "svg_id": "ring",
+      "weight": 1.0
+    },
+    {
+      "applicable_gates": [
+        "auto.components.present",
+        "semantic.components.complete"
+      ],
+      "component_id": "inner",
+      "expected_hole_count": 0,
+      "geometry": "polygon",
+      "mandatory": true,
+      "paint_type": "fill",
+      "source_mask_path": "masks/inner.png",
+      "svg_id": "inner",
+      "weight": 1.0
+    }
+  ],
+  "created_at": "2026-08-26T00:00:00Z",
+  "foreground_color": "currentColor",
+  "geometry_constraints": {
+    "endpoints": [],
+    "intentional_intersections": [],
+    "lines": [],
+    "minimum_intentional_gaps": [],
+    "orthogonality": [],
+    "parallelism": [],
+    "radial": [],
+    "strokes": [],
+    "symmetry": []
+  },
+  "map_revision": 1,
+  "normalization": {
+    "background_decision": "opaque",
+    "estimator": {
+      "background_luminance": 1,
+      "border_variance": 0,
+      "contrast": 1,
+      "dark_contrast": 1,
+      "dark_foreground_luminance": 0,
+      "light_contrast": 0,
+      "light_foreground_luminance": 1
+    },
+    "estimator_basis": "automatic",
+    "foreground_polarity": "dark",
+    "threshold": 0.5
+  },
+  "refinement_limit": 8,
+  "schema_kind": "reconstruction-map-draft",
+  "schema_version": "1.0.0",
+  "semantic_facts": [],
+  "source_sha256": "26965bc67aed9fab6a65e3ca13ac7b4f41580ebafee8528dd2d8c675afdaccdd",
+  "target_sizes": [
+    128,
+    64,
+    32,
+    24
+  ],
+  "topology_facts": [
+    {
+      "object": "inner",
+      "relation": "contains",
+      "subject": "ring"
+    }
+  ],
+  "user_confirmations": [
+    {
+      "confirmed": true,
+      "confirmed_at": "2026-08-26T00:00:00Z",
+      "decision": "accuracy target"
+    }
+  ],
+  "viewport": {
+    "alignment": "center",
+    "aspect_ratio": "1:1",
+    "fit_mode": "contain",
+    "grid": 64,
+    "view_box": [
+      0,
+      0,
+      64,
+      64
+    ]
+  }
+}

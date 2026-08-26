@@ -1,0 +1,70 @@
+{
+  "cases": [
+    {
+      "canonical": false,
+      "exit_code": 2,
+      "gate": "fail",
+      "invalid_input": true,
+      "name": "invalid-outranks-all",
+      "runtime_error": true,
+      "score": 0,
+      "status": "invalid_input",
+      "target": 100
+    },
+    {
+      "canonical": false,
+      "exit_code": 7,
+      "gate": "fail",
+      "invalid_input": false,
+      "name": "runtime-outranks-noncanonical",
+      "runtime_error": true,
+      "score": 0,
+      "status": "runtime_error",
+      "target": 100
+    },
+    {
+      "canonical": false,
+      "exit_code": 6,
+      "gate": "fail",
+      "invalid_input": false,
+      "name": "noncanonical-outranks-gate",
+      "runtime_error": false,
+      "score": 0,
+      "status": "non_canonical",
+      "target": 100
+    },
+    {
+      "canonical": true,
+      "exit_code": 4,
+      "gate": "fail",
+      "invalid_input": false,
+      "name": "gate-outranks-score",
+      "runtime_error": false,
+      "score": 0,
+      "status": "not_accepted",
+      "target": 100
+    },
+    {
+      "canonical": true,
+      "exit_code": 3,
+      "gate": "pass",
+      "invalid_input": false,
+      "name": "score-outranks-semantic-pending",
+      "runtime_error": false,
+      "score": 99,
+      "status": "not_accepted",
+      "target": 100
+    },
+    {
+      "canonical": true,
+      "exit_code": 5,
+      "gate": "pass",
+      "invalid_input": false,
+      "name": "semantic-pending",
+      "runtime_error": false,
+      "score": 100,
+      "status": "incomplete",
+      "target": 100
+    }
+  ]
+}

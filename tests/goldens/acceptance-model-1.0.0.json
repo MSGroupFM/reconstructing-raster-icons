@@ -1,0 +1,232 @@
+{
+  "metric_cases": {
+    "analytic-fill-identity": {
+      "identity": true,
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      }
+    },
+    "analytic-fill-shifted": {
+      "identity": false,
+      "metrics": {
+        "composite": 87.479154,
+        "contour": 72.979949,
+        "layout": 80.235765,
+        "silhouette": 96.777344,
+        "topology": 100.000000
+      }
+    },
+    "organic-cleaned": {
+      "identity": false,
+      "metrics": {
+        "composite": 86.792259,
+        "contour": 71.891786,
+        "layout": 79.848929,
+        "silhouette": 96.105298,
+        "topology": 100.000000
+      }
+    }
+  },
+  "model_version": "1.0.0",
+  "pipeline_cases": {
+    "analytic-fill": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "incomplete"
+    },
+    "impossible-target": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.integrity.hashes": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": false,
+      "limit_state": "stalled",
+      "metrics": {
+        "composite": 89.602511,
+        "contour": 74.155651,
+        "layout": 91.161165,
+        "silhouette": 97.070312,
+        "topology": 100.000000
+      },
+      "status": "not_accepted"
+    },
+    "missing-component": {
+      "gates": {
+        "auto.components.present": "fail"
+      },
+      "identity": false,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 92.050281,
+        "contour": 98.574144,
+        "layout": 50.000000,
+        "silhouette": 99.951196,
+        "topology": 100.000000
+      },
+      "status": "not_accepted"
+    },
+    "multicolor-rejection": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.style.monochrome": "fail",
+        "auto.svg.render": "pass",
+        "auto.svg.safe_subset": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "not_accepted"
+    },
+    "noisy-antialias": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "incomplete"
+    },
+    "occlusion-overlap": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "incomplete"
+    },
+    "open-stroke": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.primitives.constraints": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "incomplete"
+    },
+    "organic-curve": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "incomplete"
+    },
+    "ring-hole": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "incomplete"
+    },
+    "widescreen-16x9": {
+      "gates": {
+        "auto.components.present": "pass",
+        "auto.paths.integrity": "pass",
+        "auto.style.monochrome": "pass",
+        "auto.topology.facts": "pass",
+        "auto.viewport.geometry": "pass"
+      },
+      "identity": true,
+      "limit_state": "active",
+      "metrics": {
+        "composite": 100.000000,
+        "contour": 100.000000,
+        "layout": 100.000000,
+        "silhouette": 100.000000,
+        "topology": 100.000000
+      },
+      "status": "incomplete"
+    }
+  },
+  "tolerance": 0.01
+}

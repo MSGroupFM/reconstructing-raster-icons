@@ -1,0 +1,90 @@
+{
+  "accuracy_confirmed": true,
+  "accuracy_target": 98,
+  "ambiguities": [],
+  "applicable_gates": [
+    "auto.components.present",
+    "semantic.components.complete"
+  ],
+  "canonical_canvas": {
+    "height": 64,
+    "raster_height": 1024,
+    "raster_width": 64,
+    "width": 4
+  },
+  "components": [
+    {
+      "applicable_gates": [
+        "auto.components.present",
+        "semantic.components.complete"
+      ],
+      "component_id": "mark",
+      "expected_hole_count": 0,
+      "geometry": "polygon",
+      "mandatory": true,
+      "paint_type": "fill",
+      "source_mask_path": "masks/mark.png",
+      "svg_id": "mark",
+      "weight": 1
+    }
+  ],
+  "created_at": "2026-08-26T00:00:00Z",
+  "geometry_constraints": {
+    "endpoints": [],
+    "intentional_intersections": [],
+    "lines": [],
+    "minimum_intentional_gaps": [],
+    "orthogonality": [],
+    "parallelism": [],
+    "radial": [],
+    "strokes": [],
+    "symmetry": []
+  },
+  "map_revision": 1,
+  "normalization": {
+    "background_decision": "transparent",
+    "estimator": {
+      "background_luminance": 1,
+      "border_variance": 0,
+      "contrast": 1,
+      "dark_contrast": 1,
+      "dark_foreground_luminance": 0,
+      "light_contrast": 0,
+      "light_foreground_luminance": 1
+    },
+    "estimator_basis": "automatic",
+    "foreground_polarity": "dark",
+    "threshold": 0.5
+  },
+  "refinement_limit": 8,
+  "schema_kind": "reconstruction-map-draft",
+  "schema_version": "1.0.0",
+  "semantic_facts": [],
+  "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "target_sizes": [
+    128,
+    64,
+    32,
+    24
+  ],
+  "topology_facts": [],
+  "user_confirmations": [
+    {
+      "confirmed": true,
+      "confirmed_at": "2026-08-26T00:00:00Z",
+      "decision": "accuracy target"
+    }
+  ],
+  "viewport": {
+    "alignment": "center",
+    "aspect_ratio": "1:16",
+    "fit_mode": "contain",
+    "grid": 64,
+    "view_box": [
+      0,
+      0,
+      4,
+      64
+    ]
+  }
+}

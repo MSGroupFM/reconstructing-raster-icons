@@ -24,6 +24,17 @@ UTC_TIMESTAMP_RE: Final = re.compile(
 )
 
 
+class AtomicPublicationError(OSError):
+    """Report whether this atomic writer linked the immutable destination."""
+
+    def __init__(
+        self, destination: Path, *, destination_linked: bool, cause: OSError
+    ) -> None:
+        super().__init__(cause.errno, str(cause), cause.filename)
+        self.destination = Path(destination)
+        self.destination_linked = destination_linked
+
+
 @FORMAT_CHECKER.checks("aspect-ratio-1-to-16")
 def is_aspect_ratio_in_range(value: object) -> bool:
     """Accept positive integer ratios whose value is within 1:16 through 16:1."""
@@ -291,23 +302,36 @@ def atomic_write_json(path: Path, document: object) -> None:
         prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
     )
     temporary = Path(temporary_name)
+    destination_linked = False
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump(document, output, ensure_ascii=False, indent=2, sort_keys=True)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
         try:
-            os.link(temporary, destination)
-        except FileExistsError as error:
-            raise FrozenArtifactError(f"refusing to overwrite frozen artifact: {destination}") from error
-        directory_descriptor = os.open(destination.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-            temporary.unlink()
-            os.fsync(directory_descriptor)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(document, output, ensure_ascii=False, indent=2, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            try:
+                os.link(temporary, destination)
+                destination_linked = True
+            except FileExistsError as error:
+                raise FrozenArtifactError(
+                    f"refusing to overwrite frozen artifact: {destination}"
+                ) from error
+            directory_descriptor = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+                temporary.unlink()
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
         finally:
-            os.close(directory_descriptor)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+            if temporary.exists():
+                temporary.unlink()
+    except FrozenArtifactError:
+        raise
+    except OSError as error:
+        raise AtomicPublicationError(
+            destination,
+            destination_linked=destination_linked,
+            cause=error,
+        ) from error

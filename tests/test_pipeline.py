@@ -29,6 +29,7 @@ from reconstructing_raster_icons.pipeline import (
 )
 from reconstructing_raster_icons.renderer import RenderResult, RendererEvidence
 import reconstructing_raster_icons.pipeline as pipeline_module
+import reconstructing_raster_icons.schema_io as schema_io_module
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -1071,7 +1072,42 @@ class FinalizeReviewTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertTrue((root / "cleanup-report.json").is_file())
 
-    def test_rollback_removes_owned_report_but_preserves_foreign_sidecar(self) -> None:
+    def test_rollback_preserves_foreign_main_or_sidecar_race_winner(self) -> None:
+        for destination_name in ("acceptance-report.json", "cleanup-report.json"):
+            with self.subTest(destination=destination_name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                evaluation = self._evaluation(root)
+                run_dir = evaluation.parent
+                review = self._review(root)
+                output = root / "acceptance-report.json"
+                sidecar = root / "cleanup-report.json"
+                foreign_destination = root / destination_name
+                foreign = b"foreign immutable evidence\n"
+                real_link = schema_io_module.os.link
+                raced = False
+
+                def race_link(source, target, *args, **kwargs):
+                    nonlocal raced
+                    if Path(target) == foreign_destination and not raced:
+                        raced = True
+                        foreign_destination.write_bytes(foreign)
+                    return real_link(source, target, *args, **kwargs)
+
+                with mock.patch.object(
+                    schema_io_module.os, "link", side_effect=race_link
+                ):
+                    with self.assertRaises(FrozenArtifactError):
+                        finalize_review(evaluation, review, output)
+
+                self.assertTrue(run_dir.is_dir())
+                self.assertTrue(evaluation.is_file())
+                self.assertEqual(foreign_destination.read_bytes(), foreign)
+                if foreign_destination == output:
+                    self.assertFalse(sidecar.exists())
+                else:
+                    self.assertFalse(output.exists())
+
+    def test_acceptance_link_then_directory_fsync_failure_is_retryable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             evaluation = self._evaluation(root)
@@ -1079,25 +1115,83 @@ class FinalizeReviewTests(unittest.TestCase):
             review = self._review(root)
             output = root / "acceptance-report.json"
             sidecar = root / "cleanup-report.json"
-            foreign = b"foreign immutable evidence\n"
-            real_write = pipeline_module.atomic_write_json
+            before = {
+                str(path.relative_to(run_dir)): path.read_bytes()
+                for path in run_dir.rglob("*")
+                if path.is_file()
+            }
+            real_fsync = schema_io_module.os.fsync
+            calls = 0
 
-            def inject_foreign_sidecar(path, document):
-                if Path(path) == sidecar:
-                    sidecar.write_bytes(foreign)
-                    raise FrozenArtifactError("foreign sidecar won publication race")
-                return real_write(path, document)
+            def fail_second_fsync(descriptor):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("acceptance directory fsync interrupted")
+                return real_fsync(descriptor)
 
             with mock.patch.object(
-                pipeline_module, "atomic_write_json", side_effect=inject_foreign_sidecar
+                schema_io_module.os, "fsync", side_effect=fail_second_fsync
             ):
-                with self.assertRaises(FrozenArtifactError):
+                with self.assertRaises(OSError):
                     finalize_review(evaluation, review, output)
 
-            self.assertTrue(run_dir.is_dir())
-            self.assertTrue(evaluation.is_file())
+            after = {
+                str(path.relative_to(run_dir)): path.read_bytes()
+                for path in run_dir.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
             self.assertFalse(output.exists())
-            self.assertEqual(sidecar.read_bytes(), foreign)
+            self.assertFalse(sidecar.exists())
+
+            summary = finalize_review(evaluation, review, output)
+            self.assertEqual(summary["exit_code"], ExitCode.ACCEPTED)
+            self.assertTrue(output.is_file())
+            self.assertTrue(sidecar.is_file())
+
+    def test_cleanup_link_then_directory_fsync_failure_is_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            run_dir = evaluation.parent
+            review = self._review(root)
+            output = root / "acceptance-report.json"
+            sidecar = root / "cleanup-report.json"
+            before = {
+                str(path.relative_to(run_dir)): path.read_bytes()
+                for path in run_dir.rglob("*")
+                if path.is_file()
+            }
+            real_fsync = schema_io_module.os.fsync
+            calls = 0
+
+            def fail_fifth_fsync(descriptor):
+                nonlocal calls
+                calls += 1
+                if calls == 5:
+                    raise OSError("cleanup directory fsync interrupted")
+                return real_fsync(descriptor)
+
+            with mock.patch.object(
+                schema_io_module.os, "fsync", side_effect=fail_fifth_fsync
+            ):
+                with self.assertRaises(OSError):
+                    finalize_review(evaluation, review, output)
+
+            after = {
+                str(path.relative_to(run_dir)): path.read_bytes()
+                for path in run_dir.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            self.assertFalse(output.exists())
+            self.assertFalse(sidecar.exists())
+
+            summary = finalize_review(evaluation, review, output)
+            self.assertEqual(summary["exit_code"], ExitCode.ACCEPTED)
+            self.assertTrue(output.is_file())
+            self.assertTrue(sidecar.is_file())
 
     def test_concurrent_different_outputs_allow_exactly_one_coherent_finalization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

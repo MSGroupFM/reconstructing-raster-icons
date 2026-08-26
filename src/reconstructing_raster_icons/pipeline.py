@@ -64,7 +64,7 @@ from .renderer import (
 )
 from .reports import ArtifactEvidence, GateEvidence, GateResult, resolve_status
 from .safe_svg import SVG_NAMESPACE, SafeSvgDocument, validate_svg
-from .schema_io import atomic_write_json, validate_document
+from .schema_io import AtomicPublicationError, atomic_write_json, validate_document
 
 
 Renderer = Callable[[SafeSvgDocument, tuple[int, int], Path], RenderResult]
@@ -1889,9 +1889,18 @@ def _finalize_review_transaction(
     }
     workspace_cleanup_attempted = False
     owned_outputs: list[Path] = []
+
+    def publish_owned(destination: Path, document: object) -> None:
+        try:
+            atomic_write_json(destination, document)
+        except AtomicPublicationError as error:
+            if error.destination_linked and error.destination == destination:
+                owned_outputs.append(destination)
+            raise
+        owned_outputs.append(destination)
+
     try:
-        atomic_write_json(output_path, final_report)
-        owned_outputs.append(output_path)
+        publish_owned(output_path, final_report)
         cleanup_started = _utc_now()
         workspace_cleanup_attempted = True
         shutil.rmtree(run_workspace)
@@ -1908,7 +1917,7 @@ def _finalize_review_transaction(
             else:
                 record.update({"retention": "retained", "recorded_at": recorded_at})
             cleanup_records.append(record)
-        atomic_write_json(
+        publish_owned(
             cleanup_report_path,
             {
                 "stage": "finalize_cleanup",
@@ -1920,7 +1929,6 @@ def _finalize_review_transaction(
                 "artifacts": cleanup_records,
             },
         )
-        owned_outputs.append(cleanup_report_path)
     except Exception:
         for owned_output in reversed(owned_outputs):
             owned_output.unlink(missing_ok=True)

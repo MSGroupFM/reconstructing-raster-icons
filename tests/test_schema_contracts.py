@@ -374,6 +374,8 @@ class SchemaContractTests(unittest.TestCase):
             validate_document(report, "acceptance-report")
 
     def test_composite_raw_uses_normative_float64_evaluation(self) -> None:
+        import math
+
         report = accepted_report_fixture()
         report["accuracy_target"] = 0.01
         report["metrics"] = {  # type: ignore[index]
@@ -390,10 +392,12 @@ class SchemaContractTests(unittest.TestCase):
         }
         validate_document(report, "acceptance-report")
 
-        report["metrics"]["composite_raw"] = 16.5  # type: ignore[index]
-        report["metrics"]["composite"] = 16.5  # type: ignore[index]
-        with self.assertRaises(jsonschema.ValidationError):
-            validate_document(report, "acceptance-report")
+        expected = 16.666999999999998
+        for wrong_score in (math.nextafter(expected, -math.inf), math.nextafter(expected, math.inf), 16.5):
+            report["metrics"]["composite_raw"] = wrong_score  # type: ignore[index]
+            report["metrics"]["composite"] = 16.67 if wrong_score != 16.5 else 16.5  # type: ignore[index]
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(report, "acceptance-report")
 
     def test_failed_topology_gate_records_observed_hole_mismatch(self) -> None:
         report = accepted_report_fixture()

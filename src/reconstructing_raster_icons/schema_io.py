@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
@@ -131,9 +130,7 @@ def _validate_acceptance_coherence(report: dict[str, object]) -> None:
         + 0.10 * float(raw_scores["topology_raw"])
     )
     actual_composite = float(raw_scores["composite_raw"])
-    if not math.isfinite(actual_composite) or not math.isclose(
-        actual_composite, expected_composite, rel_tol=0.0, abs_tol=math.ulp(expected_composite)
-    ):
+    if actual_composite != expected_composite:
         raise ValidationError("composite_raw must equal the specified float64 weighted metric sum")
 
     target_met = raw_scores["composite_raw"] >= _decimal(report["accuracy_target"], "accuracy_target")

@@ -424,6 +424,12 @@ def topology_score(
     uncertainty: ArrayLike | None = None,
 ) -> TopologyEvaluation:
     """Derive automatic topology facts and retain the exact hard-gate state."""
+    visible_ids = set(visible_masks)
+    isolated_ids = set(isolated_masks)
+    if not visible_ids or visible_ids != isolated_ids:
+        raise ValueError(
+            "visible_masks and isolated_masks must have the same nonempty component IDs"
+        )
     expected_nodes = _node_facts(expected_node_facts)
     expected_edges = _edge_facts(expected_edge_facts)
     isolated = {

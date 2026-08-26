@@ -150,13 +150,15 @@ class TopologyMetricTests(unittest.TestCase):
         self.assertEqual(paint_facts, {("paint_order", "a", "b"), ("paint_order", "a", "c")})
         self.assertEqual(result.score, 100.0)
 
-    def test_empty_fact_sets_have_perfect_f1(self) -> None:
+    def test_empty_edge_fact_sets_have_perfect_f1(self) -> None:
+        mark = np.zeros((4, 4), dtype=bool)
+        mark[1:3, 1:3] = True
         result = topology_score(
+            {("mark", 0)},
             set(),
-            set(),
-            visible_masks={},
-            isolated_masks={},
-            paint_order=(),
+            visible_masks={"mark": mark},
+            isolated_masks={"mark": mark},
+            paint_order=("mark",),
         )
 
         self.assertIsInstance(result, TopologyEvaluation)
@@ -164,6 +166,59 @@ class TopologyMetricTests(unittest.TestCase):
         self.assertEqual(result.edge_f1, 1.0)
         self.assertEqual(result.score, 100.0)
         self.assertTrue(result.gate_pass)
+
+    def test_missing_visible_component_is_rejected_instead_of_erasing_touch(self) -> None:
+        left = np.zeros((10, 10), dtype=bool)
+        right = np.zeros_like(left)
+        left[5, 4] = True
+        right[5, 5] = True
+
+        complete = topology_score(
+            {("left", 0), ("right", 0)},
+            set(),
+            visible_masks={"left": left, "right": right},
+            isolated_masks={"left": left, "right": right},
+            paint_order=("left", "right"),
+        )
+        self.assertFalse(complete.gate_pass)
+        self.assertIn(("touches", "left", "right"), complete.unexpected_edge_facts)
+
+        with self.assertRaisesRegex(ValueError, "same nonempty component IDs"):
+            topology_score(
+                {("left", 0), ("right", 0)},
+                set(),
+                visible_masks={"left": left},
+                isolated_masks={"left": left, "right": right},
+                paint_order=("left", "right"),
+            )
+
+    def test_extra_visible_component_is_rejected(self) -> None:
+        mask = np.zeros((6, 6), dtype=bool)
+        mask[2, 2] = True
+
+        with self.assertRaisesRegex(ValueError, "same nonempty component IDs"):
+            topology_score(
+                {("mark", 0)},
+                set(),
+                visible_masks={"mark": mask, "extra": mask},
+                isolated_masks={"mark": mask},
+                paint_order=("mark",),
+            )
+
+    def test_topology_component_masks_require_matching_shapes(self) -> None:
+        visible = np.zeros((6, 6), dtype=bool)
+        isolated = np.zeros((7, 6), dtype=bool)
+        visible[2, 2] = True
+        isolated[2, 2] = True
+
+        with self.assertRaisesRegex(ValueError, "same shape"):
+            topology_score(
+                {("mark", 0)},
+                set(),
+                visible_masks={"mark": visible},
+                isolated_masks={"mark": isolated},
+                paint_order=("mark",),
+            )
 
     def test_exact_topology_mismatch_fails_gate_without_hiding_score(self) -> None:
         filled = np.zeros((8, 8), dtype=bool)
@@ -183,16 +238,28 @@ class TopologyMetricTests(unittest.TestCase):
         self.assertEqual(result.unexpected_node_facts, frozenset({("mark", 0)}))
 
     def test_connects_is_excluded_from_topology_score(self) -> None:
+        mark = np.zeros((4, 4), dtype=bool)
+        mark[1:3, 1:3] = True
         result = topology_score(
-            set(),
+            {("mark", 0)},
             {("connects", "a", "b")},
-            visible_masks={},
-            isolated_masks={},
-            paint_order=(),
+            visible_masks={"mark": mark},
+            isolated_masks={"mark": mark},
+            paint_order=("mark",),
         )
 
         self.assertEqual(result.score, 100.0)
         self.assertTrue(result.gate_pass)
+
+    def test_empty_component_inventory_is_rejected_before_scoring(self) -> None:
+        with self.assertRaisesRegex(ValueError, "same nonempty component IDs"):
+            topology_score(
+                set(),
+                set(),
+                visible_masks={},
+                isolated_masks={},
+                paint_order=(),
+            )
 
 
 if __name__ == "__main__":

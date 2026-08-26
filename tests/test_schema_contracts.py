@@ -67,12 +67,18 @@ class SchemaContractTests(unittest.TestCase):
             (frozen_map_fixture, "reconstruction-map"),
         )
         for make_document, schema_name in cases:
-            for ratio, width, height in (("1:16", 4, 64), ("16:1", 64, 4), ("2:16", 8, 64)):
+            for ratio, width, height, raster_width, raster_height in (
+                ("1:16", 4, 64, 64, 1024),
+                ("16:1", 64, 4, 1024, 64),
+                ("2:16", 8, 64, 64, 512),
+            ):
                 document = make_document()
                 document["viewport"]["aspect_ratio"] = ratio  # type: ignore[index]
                 document["viewport"]["view_box"] = [0, 0, width, height]  # type: ignore[index]
                 document["canonical_canvas"]["width"] = width  # type: ignore[index]
                 document["canonical_canvas"]["height"] = height  # type: ignore[index]
+                document["canonical_canvas"]["raster_width"] = raster_width  # type: ignore[index]
+                document["canonical_canvas"]["raster_height"] = raster_height  # type: ignore[index]
                 validate_document(document, schema_name)
             for ratio in ("96:1", "1:96", "0:1", "1:0"):
                 document = make_document()
@@ -308,6 +314,27 @@ class SchemaContractTests(unittest.TestCase):
         report["viewport"]["canonical_canvas"]["raster_width"] = 1025  # type: ignore[index]
         with self.assertRaises(jsonschema.ValidationError):
             validate_document(report, "acceptance-report")
+
+    def test_raster_dimensions_follow_declared_aspect_ratio(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            document["canonical_canvas"]["raster_height"] = 128  # type: ignore[index]
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(document, schema_name)
+
+        report = accepted_report_fixture()
+        report["viewport"]["canonical_canvas"]["raster_height"] = 128  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        document = draft_fixture()
+        document["viewport"]["aspect_ratio"] = "2:16"  # type: ignore[index]
+        document["viewport"]["view_box"] = [0, 0, 8, 64]  # type: ignore[index]
+        document["canonical_canvas"] = {"width": 8, "height": 64, "raster_width": 64, "raster_height": 512}
+        validate_document(document, "reconstruction-map-draft")
 
     def test_topology_nodes_cover_components_once_with_expected_holes(self) -> None:
         report = accepted_report_fixture()

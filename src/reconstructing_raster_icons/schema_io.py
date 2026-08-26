@@ -199,9 +199,11 @@ def _validate_canvas_relationships(
         view_box[3], "viewport.view_box[3]"
     ) != height:
         raise ValidationError("view_box dimensions must equal canonical canvas dimensions")
+    raster_width = _decimal(canvas["raster_width"], "canonical_canvas.raster_width")
+    raster_height = _decimal(canvas["raster_height"], "canonical_canvas.raster_height")
+    if raster_width * declared_height != raster_height * declared_width:
+        raise ValidationError("canonical raster dimensions must equal the declared aspect ratio")
     if enforce_raster_limit:
-        raster_width = _decimal(canvas["raster_width"], "canonical_canvas.raster_width")
-        raster_height = _decimal(canvas["raster_height"], "canonical_canvas.raster_height")
         if max(raster_width, raster_height) > Decimal(1024):
             raise ValidationError("acceptance raster maximum side must not exceed 1024")
 

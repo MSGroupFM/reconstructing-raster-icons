@@ -67,9 +67,12 @@ class SchemaContractTests(unittest.TestCase):
             (frozen_map_fixture, "reconstruction-map"),
         )
         for make_document, schema_name in cases:
-            for ratio in ("1:16", "16:1", "2:16"):
+            for ratio, width, height in (("1:16", 4, 64), ("16:1", 64, 4), ("2:16", 8, 64)):
                 document = make_document()
                 document["viewport"]["aspect_ratio"] = ratio  # type: ignore[index]
+                document["viewport"]["view_box"] = [0, 0, width, height]  # type: ignore[index]
+                document["canonical_canvas"]["width"] = width  # type: ignore[index]
+                document["canonical_canvas"]["height"] = height  # type: ignore[index]
                 validate_document(document, schema_name)
             for ratio in ("96:1", "1:96", "0:1", "1:0"):
                 document = make_document()
@@ -252,6 +255,121 @@ class SchemaContractTests(unittest.TestCase):
                 with self.assertRaises(FrozenArtifactError):
                     atomic_write_json(destination, {"value": 1})
             self.assertEqual({"winner": True}, json.loads(destination.read_text(encoding="utf-8")))
+
+    def test_normal_report_statuses_follow_mandatory_precedence(self) -> None:
+        report = accepted_report_fixture()
+        for raw_name, rounded_name in (
+            ("silhouette_raw", "silhouette"),
+            ("contour_raw", "contour"),
+            ("layout_raw", "layout"),
+            ("topology_raw", "topology"),
+            ("composite_raw", "composite"),
+        ):
+            report["metrics"][raw_name] = 0  # type: ignore[index]
+            report["metrics"][rounded_name] = 0  # type: ignore[index]
+        report["target_met"] = False
+        report["status"] = "incomplete"
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["status"] = "not_accepted"
+        report["gates"][-1]["state"] = "not_evaluated"  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+    def test_canonical_profile_is_pinned(self) -> None:
+        report = accepted_report_fixture()
+        report["canonical_renderer"]["runtime_version"] = "0"  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["canonical_renderer"]["wasm_sha256"] = "f" * 64  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+    def test_canvas_relationships_are_enforced(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            document["canonical_canvas"]["height"] = 128  # type: ignore[index]
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(document, schema_name)
+
+        report = accepted_report_fixture()
+        report["viewport"]["canonical_canvas"]["height"] = 128  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["viewport"]["canonical_canvas"]["raster_width"] = 1025  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+    def test_topology_nodes_cover_components_once_with_expected_holes(self) -> None:
+        report = accepted_report_fixture()
+        report["topology_nodes"] = []
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["topology_nodes"][0]["component_id"] = "other"  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["topology_nodes"].append(report["topology_nodes"][0].copy())  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["topology_nodes"][0]["hole_count"] = 1  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+    def test_rounded_scores_are_numeric_not_lexical_precision(self) -> None:
+        from decimal import Decimal
+
+        report = accepted_report_fixture()
+        report["metrics"]["silhouette"] = Decimal("100.000")  # type: ignore[index]
+        validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["metrics"]["silhouette_raw"] = 98.125  # type: ignore[index]
+        report["metrics"]["silhouette"] = 98.131  # type: ignore[index]
+        report["metrics"]["composite_raw"] = 99.15625  # type: ignore[index]
+        report["metrics"]["composite"] = 99.16  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        with tempfile.TemporaryDirectory() as directory:
+            equivalent = Path(directory) / "equivalent.json"
+            equivalent.write_text(
+                (FIXTURES / "valid-acceptance-report.json")
+                .read_text(encoding="utf-8")
+                .replace('"silhouette": 100', '"silhouette": 100.000', 1),
+                encoding="utf-8",
+            )
+            accepted = subprocess.run(
+                [sys.executable, "scripts/validate_schemas.py", "--schemas", "schemas", "--documents", str(equivalent)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, accepted.returncode)
+
+            invalid = Path(directory) / "invalid.json"
+            invalid.write_text(json.dumps(report), encoding="utf-8")
+            rejected = subprocess.run(
+                [sys.executable, "scripts/validate_schemas.py", "--schemas", "schemas", "--documents", str(invalid)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(2, rejected.returncode)
 
 
 if __name__ == "__main__":

@@ -84,7 +84,12 @@ def validate_instance(document: object, schema: object) -> None:
     errors = sorted(validator.iter_errors(document), key=lambda error: list(error.absolute_path))
     if errors:
         raise errors[0]
-    if isinstance(document, dict) and document.get("schema_kind") == "acceptance-report":
+    if not isinstance(document, dict):
+        return
+    schema_kind = document.get("schema_kind")
+    if schema_kind in {"reconstruction-map-draft", "reconstruction-map"}:
+        _validate_map_canvas(document)
+    elif schema_kind == "acceptance-report":
         _validate_acceptance_coherence(document)
 
 
@@ -114,8 +119,6 @@ def _validate_acceptance_coherence(report: dict[str, object]) -> None:
     for raw_name, rounded_name in pairs:
         raw_score = _decimal(metrics[raw_name], raw_name)
         rounded_score = _decimal(metrics[rounded_name], rounded_name)
-        if rounded_score.as_tuple().exponent < -2:
-            raise ValidationError(f"{rounded_name} must have at most two decimal places")
         if raw_score.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) != rounded_score:
             raise ValidationError(f"{rounded_name} must be {raw_name} rounded half-up to two decimals")
         raw_scores[raw_name] = raw_score
@@ -133,10 +136,102 @@ def _validate_acceptance_coherence(report: dict[str, object]) -> None:
     if report["target_met"] != target_met:
         raise ValidationError("target_met must equal composite_raw >= accuracy_target")
 
-    all_gates_pass = all(isinstance(gate, dict) and gate.get("state") == "pass" for gate in gates)
-    accepted = target_met and report["canonical_environment"] is True and all_gates_pass
-    if (report["status"] == "accepted") != accepted:
-        raise ValidationError("accepted status requires and is required by target, canonical environment, and passing gates")
+    _validate_report_canvas(report)
+    _validate_topology_nodes(report)
+
+    has_gate_failure = any(isinstance(gate, dict) and gate.get("state") == "fail" for gate in gates)
+    has_semantic_pending = any(
+        isinstance(gate, dict)
+        and gate.get("kind") == "semantic"
+        and gate.get("state") == "not_evaluated"
+        for gate in gates
+    )
+    if report["canonical_environment"] is not True:
+        expected_status = "non_canonical"
+    elif not target_met or has_gate_failure:
+        expected_status = "not_accepted"
+    elif has_semantic_pending:
+        expected_status = "incomplete"
+    else:
+        expected_status = "accepted"
+    if report["status"] != expected_status:
+        raise ValidationError(f"status must be {expected_status} for the declared report state")
+
+
+def _validate_map_canvas(document: dict[str, object]) -> None:
+    viewport = document["viewport"]
+    canvas = document["canonical_canvas"]
+    if not isinstance(viewport, dict) or not isinstance(canvas, dict):
+        raise ValidationError("map viewport and canonical_canvas must be objects")
+    _validate_canvas_relationships(viewport, canvas, enforce_raster_limit=False)
+
+
+def _validate_report_canvas(report: dict[str, object]) -> None:
+    viewport = report["viewport"]
+    if not isinstance(viewport, dict):
+        raise ValidationError("report viewport must be an object")
+    canvas = viewport["canonical_canvas"]
+    if not isinstance(canvas, dict):
+        raise ValidationError("report canonical canvas must be an object")
+    _validate_canvas_relationships(viewport, canvas, enforce_raster_limit=True)
+
+
+def _validate_canvas_relationships(
+    viewport: dict[str, object], canvas: dict[str, object], *, enforce_raster_limit: bool
+) -> None:
+    try:
+        width = _decimal(canvas["width"], "canonical_canvas.width")
+        height = _decimal(canvas["height"], "canonical_canvas.height")
+        grid = _decimal(viewport["grid"], "viewport.grid")
+        ratio_width, ratio_height = str(viewport["aspect_ratio"]).split(":", maxsplit=1)
+        declared_width = Decimal(ratio_width)
+        declared_height = Decimal(ratio_height)
+    except (KeyError, InvalidOperation, ValueError) as error:
+        raise ValidationError("invalid viewport/canonical canvas relationship") from error
+    if width * declared_height != height * declared_width:
+        raise ValidationError("canonical canvas dimensions must equal the declared aspect ratio")
+    if max(width, height) != grid:
+        raise ValidationError("canonical canvas maximum side must equal viewport grid")
+    view_box = viewport.get("view_box")
+    if not isinstance(view_box, list) or len(view_box) != 4:
+        raise ValidationError("viewport view_box must contain four coordinates")
+    if _decimal(view_box[2], "viewport.view_box[2]") != width or _decimal(
+        view_box[3], "viewport.view_box[3]"
+    ) != height:
+        raise ValidationError("view_box dimensions must equal canonical canvas dimensions")
+    if enforce_raster_limit:
+        raster_width = _decimal(canvas["raster_width"], "canonical_canvas.raster_width")
+        raster_height = _decimal(canvas["raster_height"], "canonical_canvas.raster_height")
+        if max(raster_width, raster_height) > Decimal(1024):
+            raise ValidationError("acceptance raster maximum side must not exceed 1024")
+
+
+def _validate_topology_nodes(report: dict[str, object]) -> None:
+    components = report["components"]
+    nodes = report["topology_nodes"]
+    if not isinstance(components, list) or not isinstance(nodes, list):
+        raise ValidationError("components and topology_nodes must be arrays")
+    expected_holes: dict[object, object] = {}
+    for component in components:
+        if not isinstance(component, dict):
+            raise ValidationError("components must be objects")
+        component_id = component.get("component_id")
+        if component_id in expected_holes:
+            raise ValidationError("report component IDs must be unique")
+        expected_holes[component_id] = component.get("expected_hole_count")
+    actual_holes: dict[object, object] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise ValidationError("topology nodes must be objects")
+        component_id = node.get("component_id")
+        if component_id in actual_holes:
+            raise ValidationError("topology node component IDs must be unique")
+        actual_holes[component_id] = node.get("hole_count")
+    if set(actual_holes) != set(expected_holes):
+        raise ValidationError("topology nodes must cover every report component exactly once")
+    for component_id, expected_hole_count in expected_holes.items():
+        if actual_holes[component_id] != expected_hole_count:
+            raise ValidationError("topology node hole count must match its component")
 
 
 def validator_for(schema: object) -> Draft202012Validator:

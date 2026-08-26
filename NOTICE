@@ -1,0 +1,12 @@
+Reconstructing Raster Icons
+Copyright 2026 Reconstructing Raster Icons contributors
+
+The workflow concept was inspired by upbrew-tech/svg-creator-skill:
+https://github.com/upbrew-tech/svg-creator-skill
+
+Reviewed revision:
+1eb83d602a992b69a1771c4e0116a9f7de6ffaa2
+
+Only the general iterative concept “create, render, inspect, compare, revise”
+was used. No upstream source code, schema, test, fixture, or documentation text
+was copied into this implementation.

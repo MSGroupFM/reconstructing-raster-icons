@@ -428,6 +428,165 @@ class EvaluateCandidateTests(unittest.TestCase):
 
             self.assertEqual(gate["state"], "fail")
 
+    def test_nonadjacent_endpoint_self_touch_fails_path_integrity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            candidate.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                '<path id="mark" d="M16 16 L48 16 L32 32 L48 48 '
+                'L16 48 L32 32 Z" fill="currentColor"/>'
+                "</svg>"
+            )
+
+            summary = evaluate_candidate(
+                map_path,
+                candidate,
+                0,
+                root / "run",
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+            gate = next(
+                item for item in evaluation["report"]["gates"]
+                if item["gate_id"] == "auto.paths.integrity"
+            )
+
+            self.assertEqual(gate["state"], "fail")
+            self.assertNotEqual(summary["status"], "accepted")
+
+    def test_path_integrity_preserves_subpath_and_child_boundaries(self) -> None:
+        candidates = {
+            "subpaths": (
+                '<path id="mark" d="M8 8 L24 8 L24 24 L8 24 Z '
+                'M40 32 L56 32 L56 48 L40 48 Z" fill="currentColor"/>'
+            ),
+            "children": (
+                '<g id="mark" fill="currentColor">'
+                '<rect x="8" y="8" width="16" height="16"/>'
+                '<rect x="40" y="32" width="16" height="16"/>'
+                "</g>"
+            ),
+        }
+        for label, body in candidates.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                map_path, candidate = self._prepared(root)
+                candidate.write_text(
+                    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                    f"{body}</svg>"
+                )
+
+                evaluate_candidate(
+                    map_path,
+                    candidate,
+                    0,
+                    root / "run",
+                    renderer=fake_renderer,
+                    diagnostic_renderer=fake_diagnostics,
+                )
+                evaluation = json.loads(
+                    (root / "run" / "evaluation-i00.json").read_text()
+                )
+                gate = next(
+                    item for item in evaluation["report"]["gates"]
+                    if item["gate_id"] == "auto.paths.integrity"
+                )
+
+                self.assertEqual(gate["state"], "pass")
+
+    def test_viewport_rejects_painted_extents_outside_every_canvas_edge(self) -> None:
+        cases = (
+            ("stroke-left", "stroke", '<line id="mark" x1="-0.25" y1="16" x2="-0.25" y2="48" fill="none" stroke="currentColor" stroke-width="1"/>'),
+            ("stroke-right", "stroke", '<line id="mark" x1="64.25" y1="16" x2="64.25" y2="48" fill="none" stroke="currentColor" stroke-width="1"/>'),
+            ("fill-top", "fill", '<rect id="mark" x="16" y="-0.25" width="32" height="16" fill="currentColor"/>'),
+            ("mixed-bottom", "mixed", '<rect id="mark" x="16" y="48.25" width="32" height="16" fill="currentColor" stroke="currentColor" stroke-width="1"/>'),
+        )
+        for label, paint_type, body in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, draft_path = write_reference_inputs(root)
+                draft = json.loads(draft_path.read_text())
+                draft["components"][0]["paint_type"] = paint_type
+                if paint_type in {"stroke", "mixed"}:
+                    draft["geometry_constraints"]["strokes"] = [{
+                        "component_id": "mark",
+                        "expected_width": 16,
+                        "cap": "butt",
+                        "join": "miter",
+                    }]
+                draft_path.write_text(json.dumps(draft))
+                reference = root / "reference"
+                prepare_reference(source, draft_path, reference)
+                candidate = root / "candidate.svg"
+                candidate.write_text(
+                    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                    f"{body}</svg>"
+                )
+
+                evaluate_candidate(
+                    reference / "reconstruction-map-r01.json",
+                    candidate,
+                    0,
+                    root / "run",
+                    renderer=fake_renderer,
+                    diagnostic_renderer=fake_diagnostics,
+                )
+                evaluation = json.loads(
+                    (root / "run" / "evaluation-i00.json").read_text()
+                )
+                gate = next(
+                    item for item in evaluation["report"]["gates"]
+                    if item["gate_id"] == "auto.viewport.geometry"
+                )
+
+                self.assertEqual(gate["state"], "fail")
+
+    def test_style_uses_the_single_foreground_color_frozen_in_map(self) -> None:
+        cases = (
+            ("fixed-color", '<rect id="mark" x="16" y="16" width="32" height="32" fill="#ff0000"/>', "pass"),
+            ("mismatch", '<rect id="mark" x="16" y="16" width="32" height="32" fill="#00ff00"/>', "fail"),
+            ("current-color", '<rect id="mark" x="16" y="16" width="32" height="32" fill="currentColor"/>', "fail"),
+            ("multiple", '<g id="mark"><rect x="16" y="16" width="16" height="32" fill="#ff0000"/><rect x="32" y="16" width="16" height="32" fill="#00ff00"/></g>', "fail"),
+        )
+        for label, body, expected in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, draft_path = write_reference_inputs(root)
+                draft = json.loads(draft_path.read_text())
+                draft["foreground_color"] = "#ff0000"
+                draft_path.write_text(json.dumps(draft))
+                reference = root / "reference"
+                prepare_reference(source, draft_path, reference)
+                frozen = json.loads(
+                    (reference / "reconstruction-map-r01.json").read_text()
+                )
+                self.assertEqual(frozen["foreground_color"], "#ff0000")
+                candidate = root / "candidate.svg"
+                candidate.write_text(
+                    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                    f"{body}</svg>"
+                )
+
+                evaluate_candidate(
+                    reference / "reconstruction-map-r01.json",
+                    candidate,
+                    0,
+                    root / "run",
+                    renderer=fake_renderer,
+                    diagnostic_renderer=fake_diagnostics,
+                )
+                evaluation = json.loads(
+                    (root / "run" / "evaluation-i00.json").read_text()
+                )
+                gate = next(
+                    item for item in evaluation["report"]["gates"]
+                    if item["gate_id"] == "auto.style.monochrome"
+                )
+
+                self.assertEqual(gate["state"], expected)
+
     def test_viewport_gate_rejects_stretch_geometry_for_contain_map(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -911,6 +1070,34 @@ class FinalizeReviewTests(unittest.TestCase):
             self.assertEqual(summary["exit_code"], ExitCode.ACCEPTED)
             self.assertTrue(output.is_file())
             self.assertTrue((root / "cleanup-report.json").is_file())
+
+    def test_rollback_removes_owned_report_but_preserves_foreign_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            run_dir = evaluation.parent
+            review = self._review(root)
+            output = root / "acceptance-report.json"
+            sidecar = root / "cleanup-report.json"
+            foreign = b"foreign immutable evidence\n"
+            real_write = pipeline_module.atomic_write_json
+
+            def inject_foreign_sidecar(path, document):
+                if Path(path) == sidecar:
+                    sidecar.write_bytes(foreign)
+                    raise FrozenArtifactError("foreign sidecar won publication race")
+                return real_write(path, document)
+
+            with mock.patch.object(
+                pipeline_module, "atomic_write_json", side_effect=inject_foreign_sidecar
+            ):
+                with self.assertRaises(FrozenArtifactError):
+                    finalize_review(evaluation, review, output)
+
+            self.assertTrue(run_dir.is_dir())
+            self.assertTrue(evaluation.is_file())
+            self.assertFalse(output.exists())
+            self.assertEqual(sidecar.read_bytes(), foreign)
 
     def test_concurrent_different_outputs_allow_exactly_one_coherent_finalization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

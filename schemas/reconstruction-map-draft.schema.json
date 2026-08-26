@@ -53,6 +53,10 @@
     "accuracy_confirmed": {
       "const": true
     },
+    "foreground_color": {
+      "type": "string",
+      "pattern": "^(?:currentColor|#[0-9A-Fa-f]{6})$"
+    },
     "normalization": {
       "$ref": "#/$defs/normalization"
     },

@@ -760,10 +760,18 @@ def _candidate_style_matches(
     constraints: Mapping[str, object],
     geometry: Mapping[str, Mapping[str, object]],
     delta: float,
+    foreground_color: str,
 ) -> bool:
     """Validate declared fill/stroke semantics and the single canonical foreground."""
     by_id = {element.attrib.get("id"): element for element in document.root.iter()}
-    allowed_foreground = {"currentcolor", "#000000", "#000", "black"}
+    expected_foreground = foreground_color.lower()
+
+    def normalized_color(value: str) -> str:
+        color = value.lower()
+        if re.fullmatch(r"#[0-9a-f]{3}", color):
+            return "#" + "".join(character * 2 for character in color[1:])
+        return color
+
     stroke_constraints = {
         str(item["component_id"]): item for item in constraints.get("strokes", [])
     }
@@ -785,10 +793,10 @@ def _candidate_style_matches(
             if name not in {"g", "title", "desc"}:
                 if fill != "none":
                     has_fill = True
-                    allowed = allowed and fill in allowed_foreground
+                    allowed = allowed and normalized_color(fill) == expected_foreground
                 if stroke != "none":
                     has_stroke = True
-                    allowed = allowed and stroke in allowed_foreground
+                    allowed = allowed and normalized_color(stroke) == expected_foreground
             for child in element:
                 walk(child, fill, stroke)
 
@@ -830,6 +838,7 @@ def _candidate_viewport_matches(
     viewport: Mapping[str, object],
     size: tuple[int, int],
     geometry: Mapping[str, Mapping[str, object]],
+    components: Sequence[Mapping[str, object]],
 ) -> bool:
     """Validate viewBox, preserveAspectRatio, canvas ratio, and clipping bounds."""
     if not _viewbox_matches(document, viewport["view_box"]):  # type: ignore[arg-type]
@@ -859,12 +868,25 @@ def _candidate_viewport_matches(
         return False
     if canonical_size(Fraction(ratio_width, ratio_height)) != size:
         return False
-    for component in geometry.values():
-        stroke_margin = max(0.0, float(component.get("stroke_width", 0.0)) / 2.0)
+    paint_types = {
+        str(component["component_id"]): str(component["paint_type"])
+        for component in components
+    }
+    for component_id, component in geometry.items():
+        paint_type = paint_types.get(component_id)
+        stroke_extent = 0.0
+        if paint_type in {"stroke", "mixed"}:
+            stroke_extent = max(
+                0.0, float(component.get("stroke_width", 0.0)) / 2.0
+            )
+            paths = component.get("paths", ())
+            has_join = any(len(path) >= 3 for path in paths) if isinstance(paths, Sequence) else False
+            if component.get("join") == "miter" and has_join:
+                stroke_extent *= max(1.0, float(component.get("miter_limit", 4.0)))
         for x, y in component["points"]:  # type: ignore[assignment]
-            if not (-stroke_margin <= x <= size[0] + stroke_margin):
+            if not (stroke_extent <= x <= size[0] - stroke_extent):
                 return False
-            if not (-stroke_margin <= y <= size[1] + stroke_margin):
+            if not (stroke_extent <= y <= size[1] - stroke_extent):
                 return False
     return True
 
@@ -877,43 +899,97 @@ def _candidate_path_integrity(
     """Reject narrow spikes, degenerate/self-crossing geometry, and path constraints."""
     worst = 0.0
 
-    def intersects(
+    def relation(
         first: tuple[tuple[float, float], tuple[float, float]],
         second: tuple[tuple[float, float], tuple[float, float]],
-    ) -> bool:
+    ) -> str:
+        epsilon = 1e-9
+
         def orientation(a, b, c) -> float:
             return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 
+        def sign(value: float) -> int:
+            return 0 if abs(value) <= epsilon else 1 if value > 0.0 else -1
+
+        def on_segment(a, b, point) -> bool:
+            return (
+                min(a[0], b[0]) - epsilon <= point[0] <= max(a[0], b[0]) + epsilon
+                and min(a[1], b[1]) - epsilon <= point[1] <= max(a[1], b[1]) + epsilon
+            )
+
         a, b = first
         c, d = second
-        values = orientation(a, b, c), orientation(a, b, d), orientation(c, d, a), orientation(c, d, b)
-        return values[0] * values[1] < 0.0 and values[2] * values[3] < 0.0
+        values = tuple(sign(value) for value in (
+            orientation(a, b, c),
+            orientation(a, b, d),
+            orientation(c, d, a),
+            orientation(c, d, b),
+        ))
+        if values[0] * values[1] < 0 and values[2] * values[3] < 0:
+            return "cross"
+        touching = (
+            (values[0] == 0 and on_segment(a, b, c))
+            or (values[1] == 0 and on_segment(a, b, d))
+            or (values[2] == 0 and on_segment(c, d, a))
+            or (values[3] == 0 and on_segment(c, d, b))
+        )
+        if not touching:
+            return "none"
+        if values == (0, 0, 0, 0):
+            axis = 0 if abs(a[0] - b[0]) >= abs(a[1] - b[1]) else 1
+            overlap = min(max(a[axis], b[axis]), max(c[axis], d[axis])) - max(
+                min(a[axis], b[axis]), min(c[axis], d[axis])
+            )
+            return "overlap" if overlap > epsilon else "touch"
+        return "touch"
 
     for component in geometry.values():
-        points = tuple((float(x), float(y)) for x, y in component["points"])  # type: ignore[assignment]
-        if len(points) < 2 or any(first == second for first, second in zip(points, points[1:])):
-            return False, delta + 1.0, delta
-        for previous, vertex, following in zip(points, points[1:], points[2:]):
-            base = math.dist(previous, following)
-            if base >= 2.0 * delta or base == 0.0:
-                continue
-            numerator = abs(
-                (following[0] - previous[0]) * (previous[1] - vertex[1])
-                - (previous[0] - vertex[0]) * (following[1] - previous[1])
-            )
-            altitude = numerator / base
-            worst = max(worst, altitude)
-            if altitude > delta:
-                return False, altitude, delta
-        segments = tuple(zip(points, points[1:]))
-        closed = points[0] == points[-1]
-        for first_index, first in enumerate(segments):
-            for second_index, second in enumerate(segments[first_index + 1 :], first_index + 1):
-                adjacent = second_index == first_index + 1 or (
-                    closed and first_index == 0 and second_index == len(segments) - 1
+        raw_paths = component.get("paths", (component["points"],))
+        paths = tuple(
+            tuple((float(x), float(y)) for x, y in path)
+            for path in raw_paths  # type: ignore[union-attr]
+        )
+        path_segments: list[tuple[int, int, tuple[tuple[float, float], tuple[float, float]]]] = []
+        for path_index, points in enumerate(paths):
+            if len(points) < 2 or any(
+                first == second for first, second in zip(points, points[1:])
+            ):
+                return False, delta + 1.0, delta
+            for previous, vertex, following in zip(points, points[1:], points[2:]):
+                base = math.dist(previous, following)
+                if base >= 2.0 * delta or base == 0.0:
+                    continue
+                numerator = abs(
+                    (following[0] - previous[0]) * (previous[1] - vertex[1])
+                    - (previous[0] - vertex[0]) * (following[1] - previous[1])
                 )
-                if not adjacent and intersects(first, second):
-                    return False, delta + 1.0, delta
+                altitude = numerator / base
+                worst = max(worst, altitude)
+                if altitude > delta:
+                    return False, altitude, delta
+            path_segments.extend(
+                (path_index, segment_index, segment)
+                for segment_index, segment in enumerate(zip(points, points[1:]))
+            )
+        for first_offset, (first_path, first_index, first) in enumerate(path_segments):
+            for second_path, second_index, second in path_segments[first_offset + 1 :]:
+                segment_relation = relation(first, second)
+                if segment_relation == "none":
+                    continue
+                same_path = first_path == second_path
+                points = paths[first_path]
+                segment_count = len(points) - 1
+                adjacent = same_path and (
+                    second_index == first_index + 1
+                    or (
+                        points[0] == points[-1]
+                        and first_index == 0
+                        and second_index == segment_count - 1
+                    )
+                )
+                if adjacent and segment_relation == "touch":
+                    continue
+                return False, delta + 1.0, delta
     for measurement in measurements:
         if getattr(measurement, "constraint_kind", "") not in {"intersection", "gap"}:
             continue
@@ -978,46 +1054,47 @@ def _candidate_geometry(
     def number(element: ElementTree.Element, name: str, default: float = 0.0) -> float:
         return float(element.attrib.get(name, default))
 
-    def element_points(element: ElementTree.Element) -> list[tuple[float, float]]:
+    def element_paths(
+        element: ElementTree.Element,
+    ) -> list[list[tuple[float, float]]]:
         name = _local_name(element.tag)
         if name == "line":
-            return [
+            return [[
                 point(number(element, "x1"), number(element, "y1")),
                 point(number(element, "x2"), number(element, "y2")),
-            ]
+            ]]
         if name == "rect":
             x, y = number(element, "x"), number(element, "y")
             width, height = number(element, "width"), number(element, "height")
-            return [
+            return [[
                 point(x, y),
                 point(x + width, y),
                 point(x + width, y + height),
                 point(x, y + height),
                 point(x, y),
-            ]
+            ]]
         if name in {"polyline", "polygon"}:
             values = [float(value) for value in element.attrib["points"].replace(",", " ").split()]
             points = [point(values[index], values[index + 1]) for index in range(0, len(values), 2)]
             if name == "polygon" and points[0] != points[-1]:
                 points.append(points[0])
-            return points
+            return [points]
         if name in {"circle", "ellipse"}:
             center_x, center_y = number(element, "cx"), number(element, "cy")
             radius_x = number(element, "r") if name == "circle" else number(element, "rx")
             radius_y = number(element, "r") if name == "circle" else number(element, "ry")
-            return [
+            return [[
                 point(
                     center_x + radius_x * math.cos(2.0 * math.pi * index / 64.0),
                     center_y + radius_y * math.sin(2.0 * math.pi * index / 64.0),
                 )
                 for index in range(65)
-            ]
+            ]]
         if name == "path":
             view_delta = max(delta / max(scale_x, scale_y), 1e-9)
             return [
-                point(x, y)
+                [point(x, y) for x, y in subpath.points]
                 for subpath in flatten_svg_path(element.attrib["d"], view_delta)
-                for x, y in subpath.points
             ]
         return []
 
@@ -1029,14 +1106,21 @@ def _candidate_geometry(
         root = by_id.get(svg_id)
         if root is None:
             raise InvalidInputError(f"SVG component {svg_id!r} is missing")
-        points = [candidate_point for element in root.iter() for candidate_point in element_points(element)]
+        paths = [
+            candidate_path
+            for element in root.iter()
+            for candidate_path in element_paths(element)
+        ]
+        points = [candidate_point for path in paths for candidate_point in path]
         if len(points) < 2:
             raise InvalidInputError(f"SVG component {svg_id!r} has no measurable geometry")
         result[component_id] = {
             "points": points,
+            "paths": paths,
             "stroke_width": number(root, "stroke-width") * max(scale_x, scale_y),
             "cap": root.attrib.get("stroke-linecap", "butt"),
             "join": root.attrib.get("stroke-linejoin", "miter"),
+            "miter_limit": number(root, "stroke-miterlimit", 4.0),
         }
     return result
 
@@ -1331,6 +1415,7 @@ def _evaluate_candidate(
         frozen_map["viewport"],  # type: ignore[arg-type]
         size,
         candidate_geometry,
+        components,
     )
     style_ok = canonical and _candidate_style_matches(
         document,
@@ -1338,6 +1423,7 @@ def _evaluate_candidate(
         frozen_map["geometry_constraints"],  # type: ignore[arg-type]
         candidate_geometry,
         delta,
+        str(frozen_map.get("foreground_color", "currentColor")),
     )
     safe_hash = candidate_hash
     automatic_gates = [
@@ -1455,6 +1541,7 @@ def _evaluate_candidate(
             "diagnostics": diagnostics_hash,
         },
         "normalization": copy.deepcopy(frozen_map["normalization"]),
+        "foreground_color": frozen_map.get("foreground_color", "currentColor"),
         "viewport": {**copy.deepcopy(frozen_map["viewport"]), "canonical_canvas": copy.deepcopy(frozen_map["canonical_canvas"])},
         "metrics": metrics,
         "components": [
@@ -1801,8 +1888,10 @@ def _finalize_review_transaction(
         str(item["logical_id"]): str(item["sha256"]) for item in final_report["artifacts"]
     }
     workspace_cleanup_attempted = False
+    owned_outputs: list[Path] = []
     try:
         atomic_write_json(output_path, final_report)
+        owned_outputs.append(output_path)
         cleanup_started = _utc_now()
         workspace_cleanup_attempted = True
         shutil.rmtree(run_workspace)
@@ -1831,9 +1920,10 @@ def _finalize_review_transaction(
                 "artifacts": cleanup_records,
             },
         )
+        owned_outputs.append(cleanup_report_path)
     except Exception:
-        output_path.unlink(missing_ok=True)
-        cleanup_report_path.unlink(missing_ok=True)
+        for owned_output in reversed(owned_outputs):
+            owned_output.unlink(missing_ok=True)
         if workspace_cleanup_attempted and backup.exists():
             if run_workspace.exists():
                 partial = run_workspace.parent / (

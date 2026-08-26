@@ -21,6 +21,7 @@
     "canonical_renderer": {"$ref": "#/$defs/canonical_renderer"},
     "hashes": {"$ref": "#/$defs/hashes"},
     "normalization": {"$ref": "#/$defs/normalization"},
+    "foreground_color": {"type": "string", "pattern": "^(?:currentColor|#[0-9A-Fa-f]{6})$"},
     "viewport": {"$ref": "#/$defs/viewport"},
     "metrics": {"$ref": "#/$defs/metrics"},
     "components": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/component_metric"}},

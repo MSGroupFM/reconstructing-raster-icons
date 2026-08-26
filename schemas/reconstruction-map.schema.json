@@ -56,6 +56,10 @@
       "maximum": 100,
       "multipleOf": 0.01
     },
+    "foreground_color": {
+      "type": "string",
+      "pattern": "^(?:currentColor|#[0-9A-Fa-f]{6})$"
+    },
     "normalization": {
       "$ref": "#/$defs/normalization"
     },

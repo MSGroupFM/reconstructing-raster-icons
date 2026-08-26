@@ -10,7 +10,7 @@
     "schema_version": {"const": "1.0.0"},
     "model_version": {"const": "1.0.0"},
     "run_id": {"type": "string", "minLength": 1},
-    "reviewed_at": {"type": "string", "format": "date-time"},
+    "reviewed_at": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"},
     "reviewer": {"type": "string", "minLength": 1},
     "gates": {"$ref": "#/$defs/semantic_gates"},
     "warnings": {"type": "array", "items": {"type": "string"}}
@@ -38,7 +38,7 @@
         "state": {"enum": ["pass", "fail", "not_evaluated"]},
         "evidence": {"$ref": "#/$defs/evidence"},
         "evaluator": {"type": "string", "minLength": 1},
-        "evaluated_at": {"type": "string", "format": "date-time"}
+        "evaluated_at": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"}
       }
     },
     "evidence": {

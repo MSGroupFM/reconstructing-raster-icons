@@ -4,17 +4,33 @@ from __future__ import annotations
 
 import json
 import os
+from fractions import Fraction
 from pathlib import Path
 import tempfile
 from typing import Final
 
-from jsonschema import Draft202012Validator, ValidationError
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 from .constants import SCHEMA_KINDS
 from .errors import FrozenArtifactError
 
 
 SCHEMA_DIRECTORY: Final = Path(__file__).resolve().parents[2] / "schemas"
+FORMAT_CHECKER: Final = FormatChecker()
+
+
+@FORMAT_CHECKER.checks("aspect-ratio-1-to-16")
+def is_aspect_ratio_in_range(value: object) -> bool:
+    """Accept positive integer ratios whose value is within 1:16 through 16:1."""
+
+    if not isinstance(value, str):
+        return False
+    try:
+        width_text, height_text = value.split(":", maxsplit=1)
+        ratio = Fraction(int(width_text), int(height_text))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return False
+    return Fraction(1, 16) <= ratio <= Fraction(16, 1)
 
 
 def _schema_path(schema_name: str) -> Path:
@@ -38,10 +54,16 @@ def load_schema(schema_name: str, schemas_dir: Path | None = None) -> dict[str, 
 def validate_document(document: object, schema_name: str) -> None:
     """Raise ``ValidationError`` when *document* violates its named contract."""
 
-    validator = Draft202012Validator(load_schema(schema_name))
+    validator = validator_for(load_schema(schema_name))
     errors = sorted(validator.iter_errors(document), key=lambda error: list(error.absolute_path))
     if errors:
         raise errors[0]
+
+
+def validator_for(schema: object) -> Draft202012Validator:
+    """Build the one validator configuration used by library and CLI callers."""
+
+    return Draft202012Validator(schema, format_checker=FORMAT_CHECKER)
 
 
 def atomic_write_json(path: Path, document: object) -> None:

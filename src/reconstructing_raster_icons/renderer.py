@@ -44,7 +44,7 @@ CANONICAL_PACKAGE_VERSION = "2.6.2"
 CANONICAL_NPM_INTEGRITY = "sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw=="
 CANONICAL_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
 CANONICAL_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
-CANONICAL_RUNNER_SHA256 = "b3ed96f1337f3afec3b623c71dbb125fd888b8deb698e605983e12b54c5b3723"
+CANONICAL_RUNNER_SHA256 = "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a"
 CANONICAL_LICENSE = "MPL-2.0"
 RENDER_TIMEOUT_SECONDS = 15
 MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
@@ -451,23 +451,47 @@ def _validate_combined_attestation(
         evidence = json.loads(payload.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
         raise RendererLockError("Node renderer returned invalid attestation evidence") from error
-    expected_keys = {
+    identity_keys = {
         "nonce", "exec_path", "node_version", "release_name", "platform", "architecture",
+    }
+    failure_keys = identity_keys | {"render_status", "isolation_failure"}
+    full_keys = identity_keys | {
         "permission_type", "allowed_read_capability", "denied_read_capability",
         "allowed_write_capability", "child_capability", "worker_capability", "network_capability",
         "filesystem_allowed", "filesystem_denial", "subprocess_denial", "network_denial",
         "render_status", "render_error", "denied_path",
     }
-    if not isinstance(evidence, dict) or set(evidence) != expected_keys:
+    if not isinstance(evidence, dict):
+        raise RendererLockError("Node renderer attestation evidence shape is invalid")
+    evidence_keys = frozenset(evidence)
+    if evidence_keys not in {frozenset(failure_keys), frozenset(full_keys)}:
         raise RendererLockError("Node renderer attestation evidence shape is invalid")
     expected_platform, expected_architecture = platform_key.split("-", 1)
-    exact = {
+    identity = {
         "nonce": nonce,
         "exec_path": str(node),
         "node_version": CANONICAL_NODE_VERSION,
         "release_name": "node",
         "platform": expected_platform,
         "architecture": expected_architecture,
+    }
+    if any(evidence.get(key) != value for key, value in identity.items()):
+        raise RendererLockError("Node renderer attestation runtime mismatch")
+    if evidence_keys == failure_keys:
+        allowed_failures = {
+            "permission_type", "allowed_read_capability", "denied_read_capability",
+            "allowed_write_capability", "child_capability", "worker_capability",
+            "network_capability", "filesystem_allowed", "filesystem_denial",
+            "subprocess_denial", "network_denial", "probe_exception",
+        }
+        if (
+            evidence["render_status"] != "isolation_failure"
+            or evidence["isolation_failure"] not in allowed_failures
+        ):
+            raise RendererLockError("Node renderer isolation failure evidence is invalid")
+        return evidence
+    exact = {
+        **identity,
         "permission_type": "object",
         "allowed_read_capability": True,
         "denied_read_capability": False,
@@ -650,6 +674,8 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
     observed: dict[str, Any] = {}
     expected = _expected_evidence()
     attestation: dict[str, Any] | None = None
+    run_directory: Path | None = None
+    retain_run_directory = False
     try:
         platform_key = _platform_key()
         observed["platform"] = platform_key
@@ -719,11 +745,16 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         attestation["executable_magic"] = node_source.data[:4].hex()
         attestation["executable_mode"] = oct(0o500)
         if completed.returncode or attestation["render_status"] != "ok" or completed.stderr:
-            diagnostic = attestation["render_error"] or completed.stderr.decode("utf-8", "replace").strip()
+            diagnostic = (
+                attestation.get("isolation_failure")
+                or attestation.get("render_error")
+                or completed.stderr.decode("utf-8", "replace").strip()
+            )
             return _failure(diagnostic or "canonical renderer failed", dimensions, observed, expected, attestation)
         png_artifact = _safe_open_bytes(output, "renderer PNG", MAX_PNG_BYTES)
         png_bytes = png_artifact.data
         _validate_png_payload(png_bytes, dimensions)
+        retain_run_directory = True
         return RenderResult(
             status=Status.ACCEPTED,
             path=output,
@@ -747,3 +778,6 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
             expected,
             attestation,
         )
+    finally:
+        if run_directory is not None and not retain_run_directory:
+            shutil.rmtree(run_directory, ignore_errors=True)

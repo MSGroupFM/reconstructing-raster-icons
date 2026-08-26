@@ -3,81 +3,97 @@ import { readFile, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import net from "node:net";
 import { dirname } from "node:path";
+import { pathToFileURL } from "node:url";
 import { initWasm, Resvg } from "../node_modules/@resvg/resvg-wasm/index.mjs";
 
-const [inputPath, outputPath, wasmPath, widthText, heightText, nonce, deniedPath] =
-  process.argv.slice(2);
-if (!inputPath || !outputPath || !wasmPath || !widthText || !heightText || !nonce || !deniedPath) {
-  throw new Error("usage: render_svg.mjs INPUT OUTPUT WASM WIDTH HEIGHT NONCE DENIED_PATH");
+function runtimeIdentity(nonce) {
+  return {
+    nonce,
+    exec_path: process.execPath,
+    node_version: process.versions.node,
+    release_name: process.release?.name,
+    platform: process.platform,
+    architecture: process.arch,
+  };
 }
 
-const width = Number(widthText);
-const height = Number(heightText);
-if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
-  throw new Error("canonical dimensions must be positive safe integers");
-}
-
-const writeDirectory = dirname(outputPath);
-const evidence = {
-  nonce,
-  exec_path: process.execPath,
-  node_version: process.versions.node,
-  release_name: process.release?.name,
-  platform: process.platform,
-  architecture: process.arch,
-  permission_type: typeof process.permission,
-  allowed_read_capability: process.permission?.has("fs.read", inputPath),
-  denied_read_capability: process.permission?.has("fs.read", deniedPath),
-  allowed_write_capability: process.permission?.has("fs.write", writeDirectory),
-  child_capability: process.permission?.has("child"),
-  worker_capability: process.permission?.has("worker"),
-  network_capability: process.permission?.has("net"),
-  denied_path: deniedPath,
-  render_status: "error",
-  render_error: null,
-};
-
-try {
-  readFileSync(inputPath);
-  evidence.filesystem_allowed = true;
-} catch (error) {
-  evidence.filesystem_allowed = error?.code ?? "UNKNOWN";
-}
-try {
-  readFileSync(deniedPath);
-  evidence.filesystem_denial = "ALLOWED";
-} catch (error) {
-  evidence.filesystem_denial = error?.code ?? "UNKNOWN";
-}
-try {
-  spawnSync(process.execPath, ["--version"]);
-  evidence.subprocess_denial = "ALLOWED";
-} catch (error) {
-  evidence.subprocess_denial = error?.code ?? "UNKNOWN";
-}
-evidence.network_denial = await new Promise((resolve) => {
-  let settled = false;
-  let socket;
-  let timer;
-  const finish = (value) => {
-    if (!settled) {
-      settled = true;
-      clearTimeout(timer);
-      socket?.destroy();
-      resolve(value);
-    }
+async function collectCapabilities({ inputPath, deniedPath, writeDirectory }) {
+  const evidence = {
+    permission_type: typeof process.permission,
+    allowed_read_capability: process.permission?.has("fs.read", inputPath),
+    denied_read_capability: process.permission?.has("fs.read", deniedPath),
+    allowed_write_capability: process.permission?.has("fs.write", writeDirectory),
+    child_capability: process.permission?.has("child"),
+    worker_capability: process.permission?.has("worker"),
+    network_capability: process.permission?.has("net"),
   };
   try {
-    socket = net.connect({ host: "127.0.0.1", port: 1 });
-    socket.once("connect", () => finish("ALLOWED"));
-    socket.once("error", (error) => finish(error?.code ?? "UNKNOWN"));
-    timer = setTimeout(() => finish("TIMEOUT"), 1000);
+    readFileSync(inputPath);
+    evidence.filesystem_allowed = true;
   } catch (error) {
-    resolve(error?.code ?? "UNKNOWN");
+    evidence.filesystem_allowed = error?.code ?? "UNKNOWN";
   }
-});
+  try {
+    readFileSync(deniedPath);
+    evidence.filesystem_denial = "ALLOWED";
+  } catch (error) {
+    evidence.filesystem_denial = error?.code ?? "UNKNOWN";
+  }
+  try {
+    spawnSync(process.execPath, ["--version"]);
+    evidence.subprocess_denial = "ALLOWED";
+  } catch (error) {
+    evidence.subprocess_denial = error?.code ?? "UNKNOWN";
+  }
+  evidence.network_denial = await new Promise((resolve) => {
+    let settled = false;
+    let socket;
+    let timer;
+    const finish = (value) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        socket?.destroy();
+        resolve(value);
+      }
+    };
+    try {
+      socket = net.connect({ host: "127.0.0.1", port: 1 });
+      socket.once("connect", () => finish("ALLOWED"));
+      socket.once("error", (error) => finish(error?.code ?? "UNKNOWN"));
+      timer = setTimeout(() => finish("TIMEOUT"), 1000);
+    } catch (error) {
+      resolve(error?.code ?? "UNKNOWN");
+    }
+  });
+  return evidence;
+}
 
-try {
+function isolationFailure(evidence) {
+  const exact = {
+    permission_type: "object",
+    allowed_read_capability: true,
+    denied_read_capability: false,
+    allowed_write_capability: true,
+    child_capability: false,
+    worker_capability: false,
+    network_capability: false,
+    filesystem_allowed: true,
+    filesystem_denial: "ERR_ACCESS_DENIED",
+    subprocess_denial: "ERR_ACCESS_DENIED",
+  };
+  for (const [key, value] of Object.entries(exact)) {
+    if (evidence[key] !== value) {
+      return key;
+    }
+  }
+  if (!["EPERM", "EACCES", "ERR_ACCESS_DENIED"].includes(evidence.network_denial)) {
+    return "network_denial";
+  }
+  return null;
+}
+
+async function renderSvg({ inputPath, outputPath, wasmPath, width, height }) {
   const [sourceBytes, wasmBytes] = await Promise.all([readFile(inputPath), readFile(wasmPath)]);
   await initWasm(wasmBytes);
 
@@ -105,16 +121,77 @@ try {
         );
       }
       await writeFile(outputPath, rendered.asPng(), { flag: "wx", mode: 0o600 });
-      evidence.render_status = "ok";
     } finally {
       rendered.free();
     }
   } finally {
     renderer.free();
   }
-} catch (error) {
-  evidence.render_error = String(error?.message ?? error);
-  process.exitCode = 1;
 }
 
-console.log(JSON.stringify(evidence));
+const defaultDependencies = {
+  collectCapabilities,
+  renderSvg,
+  emit: (record) => console.log(JSON.stringify(record)),
+};
+
+export async function runCanonicalRenderer(argv, dependencies = defaultDependencies) {
+  const [inputPath, outputPath, wasmPath, widthText, heightText, nonce, deniedPath] = argv;
+  if (!inputPath || !outputPath || !wasmPath || !widthText || !heightText || !nonce || !deniedPath) {
+    throw new Error("usage: render_svg.mjs INPUT OUTPUT WASM WIDTH HEIGHT NONCE DENIED_PATH");
+  }
+
+  const width = Number(widthText);
+  const height = Number(heightText);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new Error("canonical dimensions must be positive safe integers");
+  }
+
+  const identity = runtimeIdentity(nonce);
+  let capabilities;
+  try {
+    capabilities = await dependencies.collectCapabilities({
+      inputPath,
+      deniedPath,
+      writeDirectory: dirname(outputPath),
+    });
+  } catch {
+    dependencies.emit({
+      ...identity,
+      render_status: "isolation_failure",
+      isolation_failure: "probe_exception",
+    });
+    return 1;
+  }
+  const failure = isolationFailure(capabilities);
+  if (failure !== null) {
+    dependencies.emit({
+      ...identity,
+      render_status: "isolation_failure",
+      isolation_failure: failure,
+    });
+    return 1;
+  }
+
+  const evidence = {
+    ...identity,
+    ...capabilities,
+    denied_path: deniedPath,
+    render_status: "error",
+    render_error: null,
+  };
+  try {
+    await dependencies.renderSvg({ inputPath, outputPath, wasmPath, width, height });
+    evidence.render_status = "ok";
+  } catch (error) {
+    evidence.render_error = String(error?.message ?? error);
+    dependencies.emit(evidence);
+    return 1;
+  }
+  dependencies.emit(evidence);
+  return 0;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = await runCanonicalRenderer(process.argv.slice(2));
+}

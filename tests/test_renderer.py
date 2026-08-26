@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -30,10 +31,96 @@ from reconstructing_raster_icons.safe_svg import validate_svg
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 EXACT_NODE = Path("/private/tmp/reconstructing-raster-icons-node/node_modules/node/bin/node")
-CANONICAL_RUNNER_SHA256 = "b3ed96f1337f3afec3b623c71dbb125fd888b8deb698e605983e12b54c5b3723"
+CANONICAL_RUNNER_SHA256 = "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a"
 
 
 class RendererTests(unittest.TestCase):
+    @unittest.skipUnless(EXACT_NODE.is_file(), "exact Node 22.14.0 fixture is unavailable")
+    def test_runner_gates_every_isolation_mismatch_before_wasm_and_output(self) -> None:
+        harness = REPOSITORY / "tests" / "fixtures" / "renderer" / "runner_isolation_harness.mjs"
+        cases = (
+            "permission_type",
+            "allowed_read_capability",
+            "denied_read_capability",
+            "allowed_write_capability",
+            "child_capability",
+            "worker_capability",
+            "network_capability",
+            "filesystem_allowed",
+            "filesystem_denial",
+            "subprocess_denial",
+            "network_denial",
+            "probe_exception",
+        )
+        for case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as temporary_directory:
+                completed = subprocess.run(
+                    [str(EXACT_NODE), str(harness), case, temporary_directory],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": str(EXACT_NODE.parent), "TZ": "UTC"},
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                result = json.loads(completed.stdout)
+                self.assertEqual(result["result"], 1)
+                self.assertEqual(result["emitted"]["render_status"], "isolation_failure")
+                self.assertEqual(result["emitted"]["isolation_failure"], case)
+                self.assertFalse(result["render_called"])
+                self.assertFalse(result["output_exists"])
+                self.assertEqual(list(Path(temporary_directory).iterdir()), [])
+
+    @unittest.skipUnless(EXACT_NODE.is_file(), "exact Node 22.14.0 fixture is unavailable")
+    def test_adapter_accepts_minimal_isolation_failure_evidence_and_removes_private_artifacts(self) -> None:
+        fixture = validate_svg(REPOSITORY / "tests" / "fixtures" / "renderer" / "square.svg")
+
+        def fail_isolation(command: list[str], **kwargs: object) -> object:
+            runner_index = next(
+                index
+                for index, value in enumerate(command)
+                if not value.startswith("--") and value.endswith("scripts/render_svg.mjs")
+            )
+            private_node = Path(command[0])
+            output = Path(command[runner_index + 2])
+            nonce = command[runner_index + 6]
+            output.write_bytes(b"unexpected renderer artifact")
+            evidence = {
+                "nonce": nonce,
+                "exec_path": str(private_node),
+                "node_version": CANONICAL_NODE_VERSION,
+                "release_name": "node",
+                "platform": "darwin",
+                "architecture": "arm64",
+                "render_status": "isolation_failure",
+                "isolation_failure": "child_capability",
+            }
+            return renderer_module.subprocess.CompletedProcess(
+                command,
+                1,
+                json.dumps(evidence).encode("utf-8") + b"\n",
+                b"",
+            )
+
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            with (
+                patch.object(renderer_module, "_probe_memory_preexec"),
+                patch.object(renderer_module, "_memory_preexec", return_value=lambda: None),
+                patch.object(renderer_module.subprocess, "run", side_effect=fail_isolation),
+                patch.dict(os.environ, {"RECONSTRUCTING_RASTER_ICONS_NODE": str(EXACT_NODE)}),
+            ):
+                result = render_canonical(fixture, (128, 128), workspace)
+            inventory = list(workspace.iterdir())
+
+        self.assertEqual(result.status, Status.NON_CANONICAL)
+        self.assertEqual(result.png_bytes, b"")
+        self.assertIsNotNone(result.attestation)
+        if result.attestation is not None:
+            self.assertEqual(result.attestation["render_status"], "isolation_failure")
+            self.assertEqual(result.attestation["isolation_failure"], "child_capability")
+        self.assertEqual(inventory, [])
+
     def test_lock_matches_the_binding_renderer_contract(self) -> None:
         raw_lock = json.loads((REPOSITORY / "canonical-renderer.lock").read_text(encoding="utf-8"))
         lock = load_renderer_lock(REPOSITORY / "canonical-renderer.lock")

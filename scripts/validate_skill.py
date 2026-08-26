@@ -26,9 +26,23 @@ ALLOWED_INTERFACE_KEYS = frozenset(
 )
 LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(([^)\n]+)\)")
 PLACEHOLDER_RE = re.compile(
-    r"\[TODO(?::[^\]\n]*)?\]|\bTODO\b|\{\{[^{}\n]+\}\}|"
+    r"\[(?:TODO|TBD)(?::[^\]\n]*)?\]|\b(?:TODO|TBD|FIXME)\b|\{\{[^{}\n]+\}\}|"
     r"<(?:PLACEHOLDER|INSERT[^>\n]*|REPLACE[^>\n]*|YOUR[^>\n]*)>",
     re.IGNORECASE,
+)
+STANDALONE_SKILL_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])\$reconstructing-raster-icons(?![A-Za-z0-9_-])"
+)
+YAML_NON_STRING_RE = re.compile(
+    r"(?:~|null|true|false|yes|no|on|off|[-+]?(?:"
+    r"(?:0|[1-9][0-9_]*)|(?:[0-9][0-9_]*)?\.[0-9_]+|"
+    r"[0-9][0-9_]*(?:\.[0-9_]*)?[eE][-+]?[0-9]+|"
+    r"0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+|\.inf|\.nan))",
+    re.IGNORECASE,
+)
+YAML_TIMESTAMP_RE = re.compile(
+    r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt]|[ \t]+)[^ \t]+|"
+    r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}"
 )
 
 
@@ -69,9 +83,31 @@ def _plain_scalar(raw: str, *, relative: str, line_number: int, issues: list[Iss
         if len(value) < 2 or not value.endswith("'"):
             issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: invalid quoted value"))
             return None
-        return value[1:-1].replace("''", "'")
+        inner = value[1:-1]
+        decoded: list[str] = []
+        index = 0
+        while index < len(inner):
+            if inner[index] != "'":
+                decoded.append(inner[index])
+                index += 1
+            elif index + 1 < len(inner) and inner[index + 1] == "'":
+                decoded.append("'")
+                index += 2
+            else:
+                issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: invalid quoted value"))
+                return None
+        return "".join(decoded)
+    if re.search(r":[ \t]|:$", value):
+        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: mapping syntax is not allowed"))
+        return None
+    if re.search(r"(?:^|[ \t])#", value):
+        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: comments are not allowed"))
+        return None
     if value[0] in "[{&*!>|@`" or value.endswith(":"):
         issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: complex YAML is not allowed"))
+        return None
+    if YAML_NON_STRING_RE.fullmatch(value) or YAML_TIMESTAMP_RE.fullmatch(value):
+        issues.append(Issue("frontmatter.scalar", f"{relative}:{line_number}: expected string scalar"))
         return None
     return value
 
@@ -89,6 +125,7 @@ def _validate_frontmatter(text: str, issues: list[Issue]) -> None:
         return
 
     values: dict[str, str] = {}
+    seen_keys: set[str] = set()
     for index, line in enumerate(lines[1:closing_index], start=2):
         if not line.strip():
             continue
@@ -97,14 +134,15 @@ def _validate_frontmatter(text: str, issues: list[Issue]) -> None:
             issues.append(Issue("frontmatter.syntax", f"{relative}:{index}"))
             continue
         key, raw_value = match.groups()
-        if key in values:
+        if key in seen_keys:
             issues.append(Issue("frontmatter.duplicate_key", f"{relative}: {key}"))
             continue
+        seen_keys.add(key)
         parsed = _plain_scalar(raw_value, relative=relative, line_number=index, issues=issues)
         if parsed is not None:
             values[key] = parsed
 
-    for key in sorted(set(values) - ALLOWED_FRONTMATTER_KEYS):
+    for key in sorted(seen_keys - ALLOWED_FRONTMATTER_KEYS):
         issues.append(Issue("frontmatter.unknown_key", f"{relative}: {key}"))
     for key in sorted(ALLOWED_FRONTMATTER_KEYS - set(values)):
         issues.append(Issue("frontmatter.missing_key", f"{relative}: {key}"))
@@ -175,8 +213,13 @@ def _validate_agents(text: str, issues: list[Issue]) -> None:
     if short_description is not None and not 25 <= len(short_description) <= 64:
         issues.append(Issue("agents.short_description", f"{relative}: expected 25..64 characters"))
     default_prompt = decoded.get("default_prompt")
-    if default_prompt is not None and "$reconstructing-raster-icons" not in default_prompt:
-        issues.append(Issue("agents.default_prompt", f"{relative}: missing $reconstructing-raster-icons"))
+    if default_prompt is not None and not STANDALONE_SKILL_TOKEN_RE.search(default_prompt):
+        issues.append(
+            Issue(
+                "agents.default_prompt",
+                f"{relative}: missing standalone $reconstructing-raster-icons",
+            )
+        )
 
     policy = sections.get("policy", {})
     for key in sorted(set(policy) - {"allow_implicit_invocation"}):

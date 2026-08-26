@@ -70,6 +70,55 @@ class SkillValidatorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERROR frontmatter.unknown_key: SKILL.md: version\n", output)
 
+    def test_colon_mapping_frontmatter_is_rejected(self) -> None:
+        def add_mapping(root: Path) -> None:
+            path = root / "SKILL.md"
+            lines = path.read_text(encoding="utf-8").splitlines()
+            lines[2] = "description: invalid: mapping"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        result, output = self.mutate_skill(add_mapping)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR frontmatter.scalar: SKILL.md:3: mapping syntax is not allowed\n", output)
+
+    def test_non_string_frontmatter_scalars_are_rejected(self) -> None:
+        cases = ("true", "null", "42", "[]", "{}")
+        for key in ("name", "description"):
+            for replacement in cases:
+                with self.subTest(key=key, replacement=replacement):
+                    def replace_value(root: Path) -> None:
+                        path = root / "SKILL.md"
+                        lines = path.read_text(encoding="utf-8").splitlines()
+                        lines[1 if key == "name" else 2] = f"{key}: {replacement}"
+                        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                    result, output = self.mutate_skill(replace_value)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("ERROR frontmatter.scalar:", output)
+
+    def test_duplicate_keys_and_unsafe_yaml_constructs_remain_rejected(self) -> None:
+        attacks = ("&anchor value", "*anchor", "!unsafe value")
+        for attack in attacks:
+            with self.subTest(attack=attack):
+                def add_attack(root: Path) -> None:
+                    path = root / "SKILL.md"
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                    lines[2] = f"description: {attack}"
+                    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                result, output = self.mutate_skill(add_attack)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ERROR frontmatter.scalar:", output)
+
+        def duplicate(root: Path) -> None:
+            path = root / "SKILL.md"
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace("description:", "name: reconstructing-raster-icons\ndescription:", 1), encoding="utf-8")
+
+        result, output = self.mutate_skill(duplicate)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR frontmatter.duplicate_key: SKILL.md: name\n", output)
+
     def test_unresolved_placeholder_is_rejected(self) -> None:
         def add_placeholder(root: Path) -> None:
             path = root / "references" / "reconstruction-workflow.md"
@@ -82,6 +131,20 @@ class SkillValidatorTests(unittest.TestCase):
             output,
         )
 
+    def test_tbd_and_fixme_placeholders_are_rejected_case_insensitively(self) -> None:
+        for placeholder in ("[TBD]", "fixme"):
+            with self.subTest(placeholder=placeholder):
+                def add_placeholder(root: Path) -> None:
+                    path = root / "references" / "reconstruction-workflow.md"
+                    path.write_text(
+                        path.read_text(encoding="utf-8") + f"\n{placeholder}\n",
+                        encoding="utf-8",
+                    )
+
+                result, output = self.mutate_skill(add_placeholder)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ERROR placeholder.unresolved:", output)
+
     def test_unquoted_agent_string_is_rejected(self) -> None:
         def unquote(root: Path) -> None:
             path = root / "agents" / "openai.yaml"
@@ -91,6 +154,25 @@ class SkillValidatorTests(unittest.TestCase):
         result, output = self.mutate_skill(unquote)
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERROR agents.string_unquoted: agents/openai.yaml: interface.display_name\n", output)
+
+    def test_default_prompt_requires_standalone_skill_token(self) -> None:
+        def add_prefix_collision(root: Path) -> None:
+            path = root / "agents" / "openai.yaml"
+            text = path.read_text(encoding="utf-8")
+            path.write_text(
+                text.replace(
+                    "$reconstructing-raster-icons",
+                    "$reconstructing-raster-icons-extra",
+                ),
+                encoding="utf-8",
+            )
+
+        result, output = self.mutate_skill(add_prefix_collision)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "ERROR agents.default_prompt: agents/openai.yaml: missing standalone $reconstructing-raster-icons\n",
+            output,
+        )
 
     def test_implicit_invocation_must_remain_enabled(self) -> None:
         def disable(root: Path) -> None:

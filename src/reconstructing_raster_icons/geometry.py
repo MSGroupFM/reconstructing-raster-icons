@@ -13,10 +13,17 @@ BoolMask = NDArray[np.bool_]
 
 
 def _as_mask(mask: NDArray[np.bool_] | Iterable[Iterable[bool]]) -> BoolMask:
-    result = np.asarray(mask, dtype=bool)
+    result = np.asarray(mask)
     if result.ndim != 2:
         raise ValueError("mask must be a two-dimensional array")
-    return result
+    if np.issubdtype(result.dtype, np.bool_):
+        return result.astype(bool, copy=False)
+    if not np.issubdtype(result.dtype, np.floating):
+        raise TypeError("mask must contain bool or floating-point coverage values")
+    coverage = result.astype(np.float64, copy=False)
+    if not np.all(np.isfinite(coverage)) or np.any(coverage < 0.0) or np.any(coverage > 1.0):
+        raise ValueError("mask coverage values must be finite and between 0 and 1")
+    return coverage >= np.float64(0.5)
 
 
 def euclidean_disk(radius: int) -> BoolMask:
@@ -156,3 +163,47 @@ def count_holes(mask: NDArray[np.bool_] | Iterable[Iterable[bool]]) -> int:
         if not any(y in (0, height - 1) or x in (0, width - 1) for y, x in component):
             holes += 1
     return holes
+
+
+def component_enclosure(
+    mask: NDArray[np.bool_] | Iterable[Iterable[bool]], radius: int
+) -> BoolMask:
+    """Return geometry and regions enclosed after closing boundary gaps.
+
+    The boundary is taken from the isolated full component geometry.  Its
+    normative Euclidean closing is then treated as an impenetrable wall for a
+    4-connected flood fill from the canvas edge.
+    """
+    source = _as_mask(mask)
+    if not source.shape[0] or not source.shape[1]:
+        raise ValueError("mask dimensions must be non-zero")
+    wall = closing(binary_boundary(source), radius)
+    background = ~wall
+    exterior = np.zeros_like(source)
+    height, width = source.shape
+    queue: deque[tuple[int, int]] = deque()
+
+    for x in range(width):
+        for y in (0, height - 1):
+            if background[y, x] and not exterior[y, x]:
+                exterior[y, x] = True
+                queue.append((y, x))
+    for y in range(height):
+        for x in (0, width - 1):
+            if background[y, x] and not exterior[y, x]:
+                exterior[y, x] = True
+                queue.append((y, x))
+
+    while queue:
+        y, x = queue.popleft()
+        for dy, dx in ((-1, 0), (0, -1), (0, 1), (1, 0)):
+            next_y, next_x = y + dy, x + dx
+            if (
+                0 <= next_y < height
+                and 0 <= next_x < width
+                and background[next_y, next_x]
+                and not exterior[next_y, next_x]
+            ):
+                exterior[next_y, next_x] = True
+                queue.append((next_y, next_x))
+    return ~exterior

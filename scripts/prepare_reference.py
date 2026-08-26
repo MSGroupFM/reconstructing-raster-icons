@@ -14,11 +14,19 @@ from jsonschema import ValidationError
 
 from reconstructing_raster_icons.constants import ExitCode
 from reconstructing_raster_icons.errors import FrozenArtifactError, InvalidInputError
-from reconstructing_raster_icons.pipeline import prepare_reference
+from reconstructing_raster_icons.pipeline import prepare_reference, write_failure_report
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        print(json.dumps({"ok": False, "stage": "prepare_reference", "status": "invalid_input", "exit_code": 2}, separators=(",", ":")))
+        raise SystemExit(2)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = JsonArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--draft", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -33,9 +41,11 @@ def main() -> int:
     except (InvalidInputError, FrozenArtifactError, ValidationError, json.JSONDecodeError) as error:
         print(f"prepare_reference: {error}", file=sys.stderr)
         summary = {"ok": False, "stage": "prepare_reference", "status": "invalid_input", "exit_code": 2}
+        write_failure_report(args.output, stage="prepare_reference", status="invalid_input", exit_code=2, error=error)
     except (OSError, RuntimeError, ValueError, TypeError) as error:
         print(f"prepare_reference: {error}", file=sys.stderr)
         summary = {"ok": False, "stage": "prepare_reference", "status": "runtime_error", "exit_code": 7}
+        write_failure_report(args.output, stage="prepare_reference", status="runtime_error", exit_code=7, error=error)
     print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
     return int(summary.get("exit_code", ExitCode.RUNTIME_ERROR))
 

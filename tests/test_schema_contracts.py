@@ -49,6 +49,27 @@ class SchemaContractTests(unittest.TestCase):
         with self.assertRaises(jsonschema.ValidationError):
             validate_document(draft, "reconstruction-map-draft")
 
+    def test_component_and_svg_ids_are_unique_across_map_records(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            document["components"].append(copy.deepcopy(document["components"][0]))
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(document, schema_name)
+
+    def test_semantic_artifact_evidence_requires_hash_and_strict_logical_id(self) -> None:
+        for evidence in (
+            {"basis": "checked", "artifact_id": "candidate-i00"},
+            {"artifact_id": "../../preview.png", "sha256": "0" * 64},
+            {"artifact_id": "folder/preview", "sha256": "0" * 64},
+        ):
+            review = semantic_review_fixture()
+            review["gates"][0]["evidence"] = evidence
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(review, "semantic-review")
+
     def test_accepted_report_rejects_not_evaluated_gate(self) -> None:
         report = accepted_report_fixture()
         report["gates"][0]["state"] = "not_evaluated"  # type: ignore[index]

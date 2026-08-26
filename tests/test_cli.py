@@ -55,12 +55,32 @@ class PipelineCliTests(unittest.TestCase):
                 str(root / "output"),
                 "--freeze",
             )
+            self.assertTrue((root / "output" / "failure-report.json").is_file())
 
         self.assertEqual(result.returncode, 2)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 1)
         self.assertFalse(json.loads(lines[0])["ok"])
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_argparse_failures_emit_one_json_summary(self) -> None:
+        cases = (
+            ("prepare_reference.py", ()),
+            ("evaluate_icon.py", ()),
+            ("evaluate_icon.py", ("--iteration", "not-an-int")),
+            (
+                "evaluate_icon.py",
+                ("--map", "x", "--candidate", "x", "--iteration", "0", "--run-dir", "x", "--force"),
+            ),
+            ("finalize_review.py", ()),
+        )
+        for script, arguments in cases:
+            with self.subTest(script=script, arguments=arguments):
+                result = self._run(script, *arguments)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(len(result.stdout.splitlines()), 1)
+                self.assertEqual(json.loads(result.stdout)["status"], "invalid_input")
+                self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

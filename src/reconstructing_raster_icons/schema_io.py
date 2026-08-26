@@ -89,6 +89,7 @@ def validate_instance(document: object, schema: object) -> None:
     schema_kind = document.get("schema_kind")
     if schema_kind in {"reconstruction-map-draft", "reconstruction-map"}:
         _validate_map_canvas(document)
+        _validate_component_ids(document)
     elif schema_kind == "acceptance-report":
         _validate_acceptance_coherence(document)
 
@@ -165,6 +166,18 @@ def _validate_map_canvas(document: dict[str, object]) -> None:
     if not isinstance(viewport, dict) or not isinstance(canvas, dict):
         raise ValidationError("map viewport and canonical_canvas must be objects")
     _validate_canvas_relationships(viewport, canvas)
+
+
+def _validate_component_ids(document: dict[str, object]) -> None:
+    components = document.get("components")
+    if not isinstance(components, list):
+        raise ValidationError("map components must be an array")
+    component_ids = [item.get("component_id") for item in components if isinstance(item, dict)]
+    svg_ids = [item.get("svg_id") for item in components if isinstance(item, dict)]
+    if len(component_ids) != len(components) or len(component_ids) != len(set(component_ids)):
+        raise ValidationError("component_id values must be unique across the map")
+    if len(svg_ids) != len(components) or len(svg_ids) != len(set(svg_ids)):
+        raise ValidationError("svg_id values must be unique across the map")
 
 
 def _validate_report_canvas(report: dict[str, object]) -> None:

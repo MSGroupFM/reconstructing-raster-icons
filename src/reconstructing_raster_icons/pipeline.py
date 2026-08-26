@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 from typing import Any
 from xml.etree import ElementTree
@@ -22,6 +23,7 @@ from xml.etree import ElementTree
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from PIL import Image, UnidentifiedImageError
+from jsonschema import ValidationError
 from .constants import (
     ACCEPTANCE_MODEL_VERSION,
     AUTOMATIC_GATE_IDS,
@@ -88,11 +90,44 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _load_json(path: Path, label: str) -> dict[str, object]:
+def _snapshot_bytes(path: Path, label: str, maximum: int) -> bytes:
     source = Path(path)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    nonblocking = getattr(os, "O_NONBLOCK", 0)
+    if not no_follow or not nonblocking:
+        raise InvalidInputError(f"safe non-following open is unavailable for {label}")
+    descriptor = -1
     try:
-        if not source.is_file() or source.is_symlink():
-            raise InvalidInputError(f"{label} must be a regular, non-symlink JSON file")
+        flags = os.O_RDONLY | no_follow | nonblocking | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(source, flags)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size < 1 or metadata.st_size > maximum:
+            raise InvalidInputError(f"{label} must be a bounded regular, non-symlink file")
+        if not getattr(os, "O_CLOEXEC", 0):
+            os.set_inheritable(descriptor, False)
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > maximum:
+            raise InvalidInputError(f"{label} exceeds its size limit")
+        return data
+    except InvalidInputError:
+        raise
+    except OSError as error:
+        raise InvalidInputError(f"{label} could not be opened safely") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _decode_json(data: bytes, label: str) -> dict[str, object]:
+    try:
 
         def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
             result: dict[str, object] = {}
@@ -102,7 +137,7 @@ def _load_json(path: Path, label: str) -> dict[str, object]:
                 result[key] = value
             return result
 
-        value = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates)
     except InvalidInputError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -110,6 +145,10 @@ def _load_json(path: Path, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise InvalidInputError(f"{label} root must be an object")
     return value
+
+
+def _load_json(path: Path, label: str) -> dict[str, object]:
+    return _decode_json(_snapshot_bytes(path, label, 10 * 1024 * 1024), label)
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -154,6 +193,53 @@ def _atomic_replace_json(path: Path, document: object) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _remove_published(paths: Sequence[Path], root: Path) -> None:
+    for path in reversed(paths):
+        path.unlink(missing_ok=True)
+    for directory in sorted(
+        {path.parent for path in paths if path.parent != root}, key=lambda item: len(item.parts), reverse=True
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+
+def _publish_transaction(
+    root: Path,
+    entries: Sequence[tuple[Path, bytes]],
+    *,
+    lock_name: str,
+) -> tuple[Path, ...]:
+    root.mkdir(parents=True, exist_ok=True)
+    lock = root / lock_name
+    try:
+        descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+    except FileExistsError as error:
+        raise FrozenArtifactError(f"stage transaction is already active: {lock.name}") from error
+    published: list[Path] = []
+    staging = Path(tempfile.mkdtemp(prefix=f".{lock_name}.", dir=root))
+    try:
+        for destination, payload in entries:
+            if destination.exists():
+                raise FrozenArtifactError(f"refusing to overwrite frozen artifact: {destination}")
+            relative = destination.relative_to(root)
+            staged = staging / relative
+            _atomic_write_bytes(staged, payload)
+        for destination, _ in entries:
+            relative = destination.relative_to(root)
+            _atomic_write_bytes(destination, (staging / relative).read_bytes())
+            published.append(destination)
+        return tuple(published)
+    except Exception:
+        _remove_published(published, root)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        lock.unlink(missing_ok=True)
 
 
 def _revision_suffix(revision: object) -> str:
@@ -332,20 +418,39 @@ def _component_mask(image: Image.Image, polarity: str) -> NDArray[np.bool_]:
     return (alpha >= 0.5) & foreground
 
 
-def prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, object]:
+def _load_raster_snapshot(data: bytes, name: str) -> Image.Image:
+    with tempfile.TemporaryDirectory(prefix=".raster-snapshot-") as directory:
+        path = Path(directory) / name
+        _atomic_write_bytes(path, data)
+        return load_raster(path)
+
+
+def _validate_svg_snapshot(data: bytes) -> SafeSvgDocument:
+    with tempfile.TemporaryDirectory(prefix=".svg-snapshot-") as directory:
+        path = Path(directory) / "candidate.svg"
+        _atomic_write_bytes(path, data)
+        document = validate_svg(path)
+        return SafeSvgDocument(
+            source=Path("candidate.svg"),
+            xml_bytes=document.xml_bytes,
+            root=document.root,
+            element_count=document.element_count,
+            path_data_characters=document.path_data_characters,
+        )
+
+
+def _prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, object]:
     """Validate and freeze one reconstruction-map revision and all reference masks."""
     source_path = Path(source)
     draft_path = Path(draft)
     output_path = Path(output)
-    document = _load_json(draft_path, "reconstruction map draft")
+    draft_payload = _snapshot_bytes(draft_path, "reconstruction map draft", 10 * 1024 * 1024)
+    document = _decode_json(draft_payload, "reconstruction map draft")
     validate_document(document, "reconstruction-map-draft")
     if document.get("accuracy_confirmed") is not True:
         raise InvalidInputError("accuracy target must be explicitly confirmed")
 
-    try:
-        source_payload = source_path.read_bytes()
-    except OSError as error:
-        raise InvalidInputError("source raster cannot be read") from error
+    source_payload = _snapshot_bytes(source_path, "source raster", 50 * 1024 * 1024)
     source_hash = _sha256(source_payload)
     if document.get("source_sha256") != source_hash:
         raise InvalidInputError("source SHA-256 does not match the confirmed draft")
@@ -372,7 +477,7 @@ def prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, obje
     if existing is not None:
         raise FrozenArtifactError(f"refusing to overwrite frozen artifact: {existing}")
 
-    source_image = load_raster(source_path)
+    source_image = _load_raster_snapshot(source_payload, source_path.name or "source.png")
     ratio_width, ratio_height = str(document["viewport"]["aspect_ratio"]).split(":")  # type: ignore[index]
     ratio = Fraction(int(ratio_width), int(ratio_height))
     fit_mode = str(document["viewport"]["fit_mode"])  # type: ignore[index]
@@ -405,7 +510,9 @@ def prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, obje
         source_mask_path = Path(str(component["source_mask_path"]))
         if source_mask_path.is_absolute() or ".." in source_mask_path.parts:
             raise InvalidInputError("component source mask path must stay relative to the draft")
-        mask_image = load_raster(draft_path.parent / source_mask_path)
+        mask_source = draft_path.parent / source_mask_path
+        mask_payload = _snapshot_bytes(mask_source, "component source mask", 50 * 1024 * 1024)
+        mask_image = _load_raster_snapshot(mask_payload, mask_source.name or "component.png")
         placed_mask = apply_frozen_placement(mask_image, placement)
         mask = _component_mask(placed_mask, decision.polarity)
         bbox, centroid, area = _mask_geometry(mask)
@@ -464,12 +571,17 @@ def prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, obje
         ],
     }
 
-    _atomic_write_bytes(reference_directory / "reference-mask.png", reference_payload)
-    _atomic_write_bytes(reference_directory / "uncertainty-mask.png", uncertainty_payload)
-    for component_path, payload in component_payloads:
-        _atomic_write_bytes(component_path, payload)
-    _atomic_write_bytes(map_path, map_payload)
-    atomic_write_json(report_path, stage_report)
+    _publish_transaction(
+        output_path,
+        [
+            (reference_directory / "reference-mask.png", reference_payload),
+            (reference_directory / "uncertainty-mask.png", uncertainty_payload),
+            *component_payloads,
+            (map_path, map_payload),
+            (report_path, _json_bytes(stage_report)),
+        ],
+        lock_name=f".prepare-{suffix}.lock",
+    )
     return {
         "ok": True,
         "stage": "prepare_reference",
@@ -534,6 +646,20 @@ def _render_mask(payload: bytes, size: tuple[int, int]) -> NDArray[np.bool_]:
         raise
     except (OSError, UnidentifiedImageError) as error:
         raise InvalidInputError("renderer output is not a valid RGBA PNG") from error
+
+
+def _comparison_png(reference: NDArray[np.bool_], candidate: NDArray[np.bool_], *, diff: bool) -> bytes:
+    rgba = np.zeros((*reference.shape, 4), dtype=np.uint8)
+    if diff:
+        changed = reference ^ candidate
+        rgba[changed] = (255, 0, 255, 255)
+    else:
+        rgba[reference] = (255, 0, 0, 160)
+        rgba[candidate] = (0, 255, 255, 160)
+        rgba[reference & candidate] = (255, 255, 255, 200)
+    output = BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(output, format="PNG", optimize=False)
+    return output.getvalue()
 
 
 def _local_name(tag: str) -> str:
@@ -800,7 +926,7 @@ def _read_prior_evaluations(run_dir: Path, iteration: int) -> list[dict[str, obj
     return prior
 
 
-def evaluate_candidate(
+def _evaluate_candidate(
     map_path: Path,
     candidate: Path,
     iteration: int,
@@ -820,7 +946,8 @@ def evaluate_candidate(
         raise InvalidInputError(
             "disposable run directory cannot contain the frozen map or candidate input"
         )
-    frozen_map = _load_json(map_source, "reconstruction map")
+    map_payload = _snapshot_bytes(map_source, "reconstruction map", 10 * 1024 * 1024)
+    frozen_map = _decode_json(map_payload, "reconstruction map")
     validate_document(frozen_map, "reconstruction-map")
     suffix = _iteration_suffix(iteration)
     refinement_limit = frozen_map["refinement_limit"]
@@ -830,16 +957,27 @@ def evaluate_candidate(
     evaluation_path = workspace / f"evaluation-{suffix}.json"
     diagnostics_path = workspace / f"diagnostics-{suffix}.json"
     candidate_path = workspace / f"candidate-{suffix}.svg"
+    map_snapshot_path = workspace / f"map-snapshot-{suffix}.json"
     preview_path = workspace / f"preview-{suffix}.png"
-    for path in (evaluation_path, diagnostics_path, candidate_path, preview_path):
+    overlay_path = workspace / f"overlay-{suffix}.png"
+    diff_path = workspace / f"diff-{suffix}.png"
+    for path in (
+        evaluation_path,
+        diagnostics_path,
+        candidate_path,
+        map_snapshot_path,
+        preview_path,
+        overlay_path,
+        diff_path,
+    ):
         if path.exists():
             raise FrozenArtifactError(f"refusing to overwrite frozen artifact: {path}")
     prior = _read_prior_evaluations(workspace, iteration)
 
-    map_payload = map_source.read_bytes()
     map_hash = _sha256(map_payload)
-    document = validate_svg(candidate_source)
-    candidate_hash = _sha256(document.xml_bytes)
+    candidate_payload = _snapshot_bytes(candidate_source, "candidate SVG", 5 * 1024 * 1024)
+    document = _validate_svg_snapshot(candidate_payload)
+    candidate_hash = _sha256(candidate_payload)
     map_revision = int(frozen_map["map_revision"])
     revision = _revision_suffix(map_revision)
     reference_directory = map_source.parent / f"reference-{revision}"
@@ -873,6 +1011,10 @@ def evaluate_candidate(
     if reference.shape != (size[1], size[0]):
         raise InvalidInputError("frozen reference mask dimensions do not match the map")
     render_result = renderer(document, size, workspace)
+    if render_result.status == Status.RUNTIME_ERROR:
+        raise RuntimeError(render_result.diagnostic or "canonical renderer runtime error")
+    if render_result.status not in {Status.ACCEPTED, Status.NON_CANONICAL}:
+        raise RuntimeError(f"canonical renderer returned invalid stage status {render_result.status.value}")
     canonical = _renderer_is_canonical(render_result)
     timestamp = _utc_now()
     candidate_mask = np.zeros_like(reference)
@@ -880,7 +1022,12 @@ def evaluate_candidate(
     isolated_masks: Mapping[str, ArrayLike] = {}
     diagnostic_error = ""
     if canonical:
-        candidate_mask = _render_mask(render_result.png_bytes, size)
+        if render_result.sha256 != _sha256(render_result.png_bytes):
+            raise RuntimeError("canonical renderer output hash mismatch")
+        try:
+            candidate_mask = _render_mask(render_result.png_bytes, size)
+        except InvalidInputError as error:
+            raise RuntimeError("canonical renderer returned an invalid PNG") from error
         try:
             diagnostic_data = (
                 diagnostic_renderer(document, components, size, workspace)
@@ -890,8 +1037,7 @@ def evaluate_candidate(
             visible_masks = diagnostic_data["visible"]
             isolated_masks = diagnostic_data["isolated"]
         except Exception as error:
-            canonical = False
-            diagnostic_error = str(error)
+            raise RuntimeError(f"component diagnostics failed: {error}") from error
 
     if canonical:
         layout = component_layout_score(
@@ -981,7 +1127,7 @@ def evaluate_candidate(
             render_result.sha256 or candidate_hash,
             timestamp,
         ),
-        _artifact_gate("auto.integrity.hashes", integrity_ok, f"reconstruction-map-{revision}", map_hash, timestamp),
+        _artifact_gate("auto.integrity.hashes", integrity_ok, f"map-snapshot-{suffix}", map_hash, timestamp),
         _artifact_gate("auto.components.present", bool(layout.gate_pass), f"candidate-{suffix}", candidate_hash, timestamp),
         _artifact_gate("auto.topology.facts", bool(topology.gate_pass), f"candidate-{suffix}", candidate_hash, timestamp),
         _artifact_gate("auto.viewport.geometry", viewport_ok, f"candidate-{suffix}", candidate_hash, timestamp),
@@ -1023,6 +1169,8 @@ def evaluate_candidate(
     }
     diagnostics_payload = _json_bytes(diagnostics)
     diagnostics_hash = _sha256(diagnostics_payload)
+    overlay_payload = _comparison_png(reference, candidate_mask, diff=False) if canonical else b""
+    diff_payload = _comparison_png(reference, candidate_mask, diff=True) if canonical else b""
     semantic_gates = _pending_semantic_gates(timestamp)
     provisional = resolve_status(
         score=raw_composite,
@@ -1066,6 +1214,7 @@ def evaluate_candidate(
         "accuracy_target": frozen_map["accuracy_target"],
         "iteration": iteration,
         "limit_state": limit_state,
+        "stop_reason": stop_reason,
         "target_met": raw_composite >= float(frozen_map["accuracy_target"]),
         "canonical_environment": canonical,
         "canonical_renderer": _canonical_renderer_report(),
@@ -1077,10 +1226,7 @@ def evaluate_candidate(
             "candidate": candidate_hash,
             "diagnostics": diagnostics_hash,
         },
-        "normalization": {
-            key: frozen_map["normalization"][key]  # type: ignore[index]
-            for key in ("foreground_polarity", "background_decision", "threshold")
-        },
+        "normalization": copy.deepcopy(frozen_map["normalization"]),
         "viewport": {**copy.deepcopy(frozen_map["viewport"]), "canonical_canvas": copy.deepcopy(frozen_map["canonical_canvas"])},
         "metrics": metrics,
         "components": [
@@ -1113,10 +1259,29 @@ def evaluate_candidate(
         "warnings": [item for item in (render_result.diagnostic, diagnostic_error) if item],
         "limitations": [] if canonical else ["canonical renderer/runtime was not confirmed"],
         "artifacts": [
+            {"logical_id": f"source-{revision}", "sha256": str(frozen_map["source_sha256"]), "retention": "retained"},
             {"logical_id": f"reconstruction-map-{revision}", "sha256": map_hash, "retention": "retained"},
+            {"logical_id": f"map-snapshot-{suffix}", "sha256": map_hash, "retention": "retained"},
             {"logical_id": str(reference_record["logical_id"]), "sha256": str(reference_record["sha256"]), "retention": "retained"},
             {"logical_id": str(uncertainty_record["logical_id"]), "sha256": str(uncertainty_record["sha256"]), "retention": "retained"},
+            *[
+                {
+                    "logical_id": str(item["reference_mask"]["logical_id"]),
+                    "sha256": str(item["reference_mask"]["sha256"]),
+                    "retention": "retained",
+                }
+                for item in components
+            ],
             {"logical_id": f"candidate-{suffix}", "sha256": candidate_hash, "retention": "retained"},
+            *(
+                [
+                    {"logical_id": f"preview-{suffix}", "sha256": render_result.sha256, "retention": "retained"},
+                    {"logical_id": f"overlay-{suffix}", "sha256": _sha256(overlay_payload), "retention": "retained"},
+                    {"logical_id": f"diff-{suffix}", "sha256": _sha256(diff_payload), "retention": "retained"},
+                ]
+                if canonical
+                else []
+            ),
             {"logical_id": f"diagnostics-{suffix}", "sha256": diagnostics_hash, "retention": "retained"},
         ],
     }
@@ -1134,30 +1299,50 @@ def evaluate_candidate(
         "gate_improvement": current_improvement,
         "limit_state": limit_state,
         "stop_reason": stop_reason,
-        "cleanup_logical_ids": [f"candidate-{suffix}", f"diagnostics-{suffix}", f"preview-{suffix}"],
+        "cleanup_logical_ids": [
+            f"map-snapshot-{suffix}",
+            f"candidate-{suffix}",
+            f"diagnostics-{suffix}",
+            *([f"preview-{suffix}", f"overlay-{suffix}", f"diff-{suffix}"] if canonical else []),
+            f"evaluation-{suffix}",
+        ],
         "report": report,
     }
 
-    workspace.mkdir(parents=True, exist_ok=True)
-    _atomic_write_bytes(candidate_path, document.xml_bytes)
-    if render_result.png_bytes:
-        _atomic_write_bytes(preview_path, render_result.png_bytes)
-    _atomic_write_bytes(diagnostics_path, diagnostics_payload)
-    atomic_write_json(evaluation_path, evaluation)
-    _atomic_replace_json(
-        workspace / "run-state.json",
-        {
-            "run_id": report["run_id"],
-            "map_revision": map_revision,
-            "latest_iteration": iteration,
-            "latest_evaluation": f"evaluation-{suffix}",
-            "score_history": score_history,
-            "limit_state": limit_state,
-            "stop_reason": stop_reason,
-        },
+    entries = [
+        (map_snapshot_path, map_payload),
+        (candidate_path, document.xml_bytes),
+        *(
+            [
+                (preview_path, render_result.png_bytes),
+                (overlay_path, overlay_payload),
+                (diff_path, diff_payload),
+            ]
+            if canonical
+            else []
+        ),
+        (diagnostics_path, diagnostics_payload),
+        (evaluation_path, _json_bytes(evaluation)),
+    ]
+    published = _publish_transaction(
+        workspace, entries, lock_name=f".evaluate-{suffix}.lock"
     )
-    if map_source.read_bytes() != map_payload:
-        raise RuntimeError("frozen reconstruction map changed during evaluation")
+    try:
+        _atomic_replace_json(
+            workspace / "run-state.json",
+            {
+                "run_id": report["run_id"],
+                "map_revision": map_revision,
+                "latest_iteration": iteration,
+                "latest_evaluation": f"evaluation-{suffix}",
+                "score_history": score_history,
+                "limit_state": limit_state,
+                "stop_reason": stop_reason,
+            },
+        )
+    except Exception:
+        _remove_published(published, workspace)
+        raise
     return {
         "ok": True,
         "stage": "evaluate_candidate",
@@ -1185,19 +1370,21 @@ def _ensure_logical_evidence(document: Mapping[str, object]) -> None:
     walk(document)
 
 
-def finalize_review(
+def _finalize_review(
     evaluation: Path, semantic_review: Path, output: Path
 ) -> dict[str, object]:
     """Merge validated semantic evidence, resolve precedence, report, then inventory cleanup."""
     evaluation_path = Path(evaluation)
     review_path = Path(semantic_review)
     output_path = Path(output)
-    cleanup_inventory_path = output_path.parent / "cleanup-inventory.json"
-    if output_path.exists() or cleanup_inventory_path.exists():
-        existing = output_path if output_path.exists() else cleanup_inventory_path
+    cleanup_report_path = output_path.parent / "cleanup-report.json"
+    if output_path.exists() or cleanup_report_path.exists():
+        existing = output_path if output_path.exists() else cleanup_report_path
         raise FrozenArtifactError(f"refusing to overwrite frozen artifact: {existing}")
-    evaluated = _load_json(evaluation_path, "evaluation")
-    review = _load_json(review_path, "semantic review")
+    evaluation_payload = _snapshot_bytes(evaluation_path, "evaluation", 20 * 1024 * 1024)
+    review_payload = _snapshot_bytes(review_path, "semantic review", 10 * 1024 * 1024)
+    evaluated = _decode_json(evaluation_payload, "evaluation")
+    review = _decode_json(review_payload, "semantic review")
     validate_document(review, "semantic-review")
     _ensure_logical_evidence(review)
     if evaluated.get("stage") != "evaluate_candidate" or not isinstance(evaluated.get("report"), Mapping):
@@ -1221,33 +1408,53 @@ def finalize_review(
     final_report = base_report
     final_report["created_at"] = _utc_now()
     final_report["status"] = resolution.status.value
+    final_report["stop_reason"] = (
+        "accepted"
+        if resolution.status == Status.ACCEPTED
+        else evaluated.get("stop_reason") or "user_stopped"
+    )
     final_report["target_met"] = (
         float(final_report["metrics"]["composite_raw"]) >= float(final_report["accuracy_target"])
     )
     final_report["gates"] = gates
     final_report["warnings"] = list(final_report["warnings"]) + list(review["warnings"])
     cleanup_ids = frozenset(str(item) for item in evaluated.get("cleanup_logical_ids", []))
-    for artifact in final_report["artifacts"]:
-        if artifact["logical_id"] in cleanup_ids and str(artifact["logical_id"]).startswith("diagnostics-"):
-            artifact["retention"] = "deleted"
+    evaluation_id = str(evaluated["artifact_id"])
+    final_report["artifacts"].append(
+        {
+            "logical_id": evaluation_id,
+            "sha256": _sha256(evaluation_payload),
+            "retention": "retained",
+        }
+    )
     validate_document(final_report, "acceptance-report")
     _ensure_logical_evidence(final_report)
 
     run_workspace = evaluation_path.parent
+    atomic_write_json(output_path, final_report)
     cleanup_started = _utc_now()
+    artifact_hashes = {
+        str(item["logical_id"]): str(item["sha256"]) for item in final_report["artifacts"]
+    }
     cleanup_records: list[dict[str, object]] = []
     if run_workspace.exists():
         resolved_workspace = run_workspace.resolve()
         if resolved_workspace == resolved_workspace.parent or resolved_workspace == Path("/"):
             raise InvalidInputError("refusing unsafe run workspace cleanup")
-        cleanup_records = [
-            {"logical_id": str(item), "retention": "deleted"}
-            for item in sorted(cleanup_ids)
-        ]
         shutil.rmtree(run_workspace)
-    atomic_write_json(output_path, final_report)
+        deleted_at = _utc_now()
+        cleanup_records = [
+            {
+                "logical_id": logical_id,
+                "sha256": artifact_hashes[logical_id],
+                "retention": "deleted",
+                "deleted_at": deleted_at,
+            }
+            for logical_id in sorted(cleanup_ids)
+            if logical_id in artifact_hashes
+        ]
     atomic_write_json(
-        cleanup_inventory_path,
+        cleanup_report_path,
         {
             "stage": "finalize_cleanup",
             "stage_version": SCHEMA_VERSION,
@@ -1266,3 +1473,102 @@ def finalize_review(
         "score": final_report["metrics"]["composite"],
         "exit_code": int(resolution.exit_code),
     }
+
+
+def write_failure_report(
+    directory: Path,
+    *,
+    stage: str,
+    status: str,
+    exit_code: int,
+    error: BaseException,
+) -> None:
+    """Best-effort immutable minimal failure evidence for a safely writable stage directory."""
+    destination_directory = Path(directory)
+    if destination_directory.is_symlink():
+        return
+    try:
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        if not destination_directory.is_dir():
+            return
+        destination = destination_directory / "failure-report.json"
+        inventory: list[dict[str, str]] = []
+        for path in sorted(destination_directory.rglob("*")):
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or path.name == destination.name
+                or path.name.endswith(".lock")
+                or any(part.startswith(".") for part in path.relative_to(destination_directory).parts)
+            ):
+                continue
+            payload = path.read_bytes()
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "-", path.name).replace("..", "-")
+            inventory.append(
+                {
+                    "logical_id": f"retained-{_sha256(payload)[:12]}-{safe_name}",
+                    "sha256": _sha256(payload),
+                    "retention": "retained",
+                }
+            )
+        atomic_write_json(
+            destination,
+            {
+                "stage": stage,
+                "status": status,
+                "exit_code": int(exit_code),
+                "error": f"{type(error).__name__}: stage failed",
+                "created_at": _utc_now(),
+                "artifacts": inventory,
+            },
+        )
+    except (OSError, ValueError, FrozenArtifactError):
+        return
+
+
+def _failure_status(error: BaseException) -> tuple[str, int]:
+    if isinstance(error, (InvalidInputError, FrozenArtifactError, ValidationError, json.JSONDecodeError)):
+        return "invalid_input", int(ExitCode.INVALID_INPUT)
+    return "runtime_error", int(ExitCode.RUNTIME_ERROR)
+
+
+def prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, object]:
+    try:
+        return _prepare_reference(source, draft, output)
+    except Exception as error:
+        status, exit_code = _failure_status(error)
+        write_failure_report(Path(output), stage="prepare_reference", status=status, exit_code=exit_code, error=error)
+        raise
+
+
+def evaluate_candidate(
+    map_path: Path,
+    candidate: Path,
+    iteration: int,
+    run_dir: Path,
+    *,
+    renderer: Renderer = render_canonical,
+    diagnostic_renderer: DiagnosticRenderer | None = None,
+) -> dict[str, object]:
+    try:
+        return _evaluate_candidate(
+            map_path,
+            candidate,
+            iteration,
+            run_dir,
+            renderer=renderer,
+            diagnostic_renderer=diagnostic_renderer,
+        )
+    except Exception as error:
+        status, exit_code = _failure_status(error)
+        write_failure_report(Path(run_dir), stage="evaluate_candidate", status=status, exit_code=exit_code, error=error)
+        raise
+
+
+def finalize_review(evaluation: Path, semantic_review: Path, output: Path) -> dict[str, object]:
+    try:
+        return _finalize_review(evaluation, semantic_review, output)
+    except Exception as error:
+        status, exit_code = _failure_status(error)
+        write_failure_report(Path(output).parent, stage="finalize_review", status=status, exit_code=exit_code, error=error)
+        raise

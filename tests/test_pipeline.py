@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -26,6 +27,7 @@ from reconstructing_raster_icons.pipeline import (
     prepare_reference,
 )
 from reconstructing_raster_icons.renderer import RenderResult, RendererEvidence
+import reconstructing_raster_icons.pipeline as pipeline_module
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -98,7 +100,9 @@ class PrepareReferenceTests(unittest.TestCase):
             with self.assertRaises((ValidationError, InvalidInputError)):
                 prepare_reference(source, draft_path, output)
 
-            self.assertFalse(output.exists())
+            self.assertEqual(
+                [path.name for path in output.iterdir()], ["failure-report.json"]
+            )
 
     def test_freezes_revision_and_masks_without_ever_overwriting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -144,6 +148,93 @@ class PrepareReferenceTests(unittest.TestCase):
             )
 
             self.assertLess(frozen["components"][0]["bbox"][0], 200)
+
+    def test_source_hash_and_pixels_use_one_immutable_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft = write_reference_inputs(root)
+            original = source.read_bytes()
+            replacement_mask = np.zeros((64, 64), dtype=bool)
+            replacement_mask[8:24, 8:24] = True
+            replacement = png_bytes(replacement_mask)
+            real_loader = pipeline_module.load_raster
+
+            def replace_then_load(path: Path):
+                source.write_bytes(replacement)
+                return real_loader(path)
+
+            with mock.patch.object(pipeline_module, "load_raster", side_effect=replace_then_load):
+                prepare_reference(source, draft, root / "reference")
+            frozen = json.loads((root / "reference" / "reconstruction-map-r01.json").read_text())
+            with Image.open(root / "reference" / "reference-r01" / "reference-mask.png") as image:
+                frozen_mask = np.asarray(image.convert("L")) < 128
+            rows, columns = np.nonzero(frozen_mask)
+
+            self.assertEqual(frozen["source_sha256"], hashlib.sha256(original).hexdigest())
+            self.assertEqual((columns.min(), columns.max()), (252, 771))
+
+    def test_draft_validation_and_freeze_use_one_immutable_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            real_validate = pipeline_module.validate_document
+
+            def mutate_after_validate(document, schema_name):
+                result = real_validate(document, schema_name)
+                if schema_name == "reconstruction-map-draft":
+                    replacement = json.loads(draft_path.read_text())
+                    replacement["accuracy_target"] = 97
+                    draft_path.write_text(json.dumps(replacement))
+                return result
+
+            with mock.patch.object(
+                pipeline_module, "validate_document", side_effect=mutate_after_validate
+            ):
+                prepare_reference(source, draft_path, root / "reference")
+            frozen = json.loads(
+                (root / "reference" / "reconstruction-map-r01.json").read_text()
+            )
+
+            self.assertEqual(frozen["accuracy_target"], 98)
+
+    def test_duplicate_component_ids_fail_before_any_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            draft = json.loads(draft_path.read_text())
+            draft["components"].append(copy.deepcopy(draft["components"][0]))
+            draft_path.write_text(json.dumps(draft))
+
+            with self.assertRaises(ValidationError):
+                prepare_reference(source, draft_path, root / "reference")
+
+            self.assertEqual(
+                [path.name for path in (root / "reference").iterdir()], ["failure-report.json"]
+            )
+
+    def test_failed_publication_rolls_back_and_same_revision_is_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft = write_reference_inputs(root)
+            output = root / "reference"
+            real_write = pipeline_module._atomic_write_bytes
+
+            def fail_final_publish(path: Path, payload: bytes) -> None:
+                if path == output / "reference-stage-report-r01.json":
+                    raise OSError("publication interrupted")
+                real_write(path, payload)
+
+            with mock.patch.object(
+                pipeline_module, "_atomic_write_bytes", side_effect=fail_final_publish
+            ):
+                with self.assertRaises(OSError):
+                    prepare_reference(source, draft, output)
+
+            self.assertEqual(
+                [path.name for path in output.iterdir()], ["failure-report.json"]
+            )
+            summary = prepare_reference(source, draft, output)
+            self.assertEqual(summary["artifact_id"], "reconstruction-map-r01")
 
 
 class EvaluateCandidateTests(unittest.TestCase):
@@ -192,6 +283,10 @@ class EvaluateCandidateTests(unittest.TestCase):
             self.assertTrue((run_dir / "evaluation-i00.json").is_file())
             self.assertTrue((run_dir / "diagnostics-i00.json").is_file())
             self.assertTrue((run_dir / "candidate-i00.svg").is_file())
+            self.assertEqual((run_dir / "map-snapshot-i00.json").read_bytes(), before)
+            self.assertTrue((run_dir / "preview-i00.png").is_file())
+            self.assertTrue((run_dir / "overlay-i00.png").is_file())
+            self.assertTrue((run_dir / "diff-i00.png").is_file())
             self.assertTrue((run_dir / "run-state.json").is_file())
             self.assertEqual(before, map_path.read_bytes())
 
@@ -275,6 +370,192 @@ class EvaluateCandidateTests(unittest.TestCase):
             )
 
             self.assertEqual(gate["state"], "fail")
+
+    def test_map_configuration_and_hash_use_one_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            old = map_path.read_bytes()
+            real_validate = pipeline_module.validate_document
+
+            def mutate_after_validate(document, schema_name):
+                result = real_validate(document, schema_name)
+                if schema_name == "reconstruction-map":
+                    mutated = json.loads(old)
+                    mutated["accuracy_target"] = 97
+                    map_path.write_text(json.dumps(mutated))
+                return result
+
+            with mock.patch.object(pipeline_module, "validate_document", side_effect=mutate_after_validate):
+                evaluate_candidate(
+                    map_path,
+                    candidate,
+                    0,
+                    root / "run",
+                    renderer=fake_renderer,
+                    diagnostic_renderer=fake_diagnostics,
+                )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+
+            self.assertEqual(evaluation["report"]["accuracy_target"], 98)
+            self.assertEqual(evaluation["map_sha256"], hashlib.sha256(old).hexdigest())
+            self.assertEqual((root / "run" / "map-snapshot-i00.json").read_bytes(), old)
+
+    def test_candidate_validation_hash_and_publication_use_one_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            old = candidate.read_bytes()
+            replacement = old.replace(b'x="16"', b'x="8"')
+            real_validate = pipeline_module._validate_svg_snapshot
+
+            def mutate_after_validate(payload: bytes):
+                document = real_validate(payload)
+                candidate.write_bytes(replacement)
+                return document
+
+            with mock.patch.object(
+                pipeline_module, "_validate_svg_snapshot", side_effect=mutate_after_validate
+            ):
+                evaluate_candidate(
+                    map_path,
+                    candidate,
+                    0,
+                    root / "run",
+                    renderer=fake_renderer,
+                    diagnostic_renderer=fake_diagnostics,
+                )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+
+            self.assertEqual((root / "run" / "candidate-i00.svg").read_bytes(), old)
+            self.assertEqual(evaluation["report"]["hashes"]["candidate"], hashlib.sha256(old).hexdigest())
+
+    def test_runtime_renderer_result_publishes_no_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+
+            def runtime_renderer(document, size, workspace):
+                return RenderResult(
+                    status=Status.RUNTIME_ERROR,
+                    path=None,
+                    png_bytes=b"not-a-png",
+                    sha256="",
+                    size=size,
+                    diagnostic="renderer crashed",
+                    observed=RendererEvidence(),
+                    expected=RendererEvidence(),
+                    attestation=None,
+                )
+
+            with self.assertRaises(RuntimeError):
+                evaluate_candidate(map_path, candidate, 0, root / "run", renderer=runtime_renderer)
+
+            self.assertFalse((root / "run" / "evaluation-i00.json").exists())
+            self.assertFalse((root / "run" / "preview-i00.png").exists())
+
+    def test_false_accepted_renderer_png_is_runtime_failure_and_never_written(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+
+            def invalid_renderer(document, size, workspace):
+                payload = b"not-a-png"
+                return RenderResult(
+                    status=Status.ACCEPTED,
+                    path=None,
+                    png_bytes=payload,
+                    sha256=hashlib.sha256(payload).hexdigest(),
+                    size=size,
+                    diagnostic="",
+                    observed=RendererEvidence(node_version="22.14.0"),
+                    expected=RendererEvidence(node_version="22.14.0"),
+                    attestation={"render_status": "ok"},
+                )
+
+            with self.assertRaises(RuntimeError):
+                evaluate_candidate(
+                    map_path, candidate, 0, root / "run", renderer=invalid_renderer
+                )
+
+            self.assertFalse((root / "run" / "evaluation-i00.json").exists())
+            self.assertFalse((root / "run" / "preview-i00.png").exists())
+
+    def test_only_explicit_noncanonical_result_maps_to_exit_six(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+
+            def noncanonical_renderer(document, size, workspace):
+                return RenderResult(
+                    status=Status.NON_CANONICAL,
+                    path=None,
+                    png_bytes=b"must-not-be-published",
+                    sha256="",
+                    size=size,
+                    diagnostic="canonical runtime unavailable",
+                    observed=RendererEvidence(),
+                    expected=RendererEvidence(),
+                    attestation=None,
+                )
+
+            summary = evaluate_candidate(
+                map_path, candidate, 0, root / "run", renderer=noncanonical_renderer
+            )
+
+            self.assertEqual(summary["exit_code"], ExitCode.NON_CANONICAL)
+            self.assertFalse((root / "run" / "preview-i00.png").exists())
+
+    def test_diagnostic_exception_publishes_no_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+
+            def broken(*args):
+                raise RuntimeError("diagnostics crashed")
+
+            with self.assertRaises(RuntimeError):
+                evaluate_candidate(
+                    map_path, candidate, 0, root / "run", renderer=fake_renderer, diagnostic_renderer=broken
+                )
+
+            self.assertFalse((root / "run" / "evaluation-i00.json").exists())
+
+    def test_failed_publication_rolls_back_and_same_iteration_is_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            run_dir = root / "run"
+            real_write = pipeline_module._atomic_write_bytes
+
+            def fail_final_publish(path: Path, payload: bytes) -> None:
+                if path == run_dir / "diagnostics-i00.json":
+                    raise OSError("publication interrupted")
+                real_write(path, payload)
+
+            with mock.patch.object(
+                pipeline_module, "_atomic_write_bytes", side_effect=fail_final_publish
+            ):
+                with self.assertRaises(OSError):
+                    evaluate_candidate(
+                        map_path,
+                        candidate,
+                        0,
+                        run_dir,
+                        renderer=fake_renderer,
+                        diagnostic_renderer=fake_diagnostics,
+                    )
+
+            self.assertEqual([path.name for path in run_dir.iterdir()], ["failure-report.json"])
+            summary = evaluate_candidate(
+                map_path,
+                candidate,
+                0,
+                run_dir,
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            self.assertEqual(summary["artifact_id"], "evaluation-i00")
 
 
 class StallTests(unittest.TestCase):
@@ -365,12 +646,133 @@ class FinalizeReviewTests(unittest.TestCase):
 
             summary = finalize_review(evaluation, review, output)
             report = json.loads(output.read_text(encoding="utf-8"))
+            cleanup = json.loads((root / "cleanup-report.json").read_text(encoding="utf-8"))
+            artifacts = {item["logical_id"]: item for item in report["artifacts"]}
 
             self.assertEqual(summary["exit_code"], ExitCode.ACCEPTED)
             self.assertFalse(run_dir.exists())
-            self.assertTrue((root / "cleanup-inventory.json").is_file())
+            self.assertTrue((root / "cleanup-report.json").is_file())
             self.assertTrue(all(set(item) == {"logical_id", "sha256", "retention"} for item in report["artifacts"]))
             self.assertNotIn(str(root), output.read_text(encoding="utf-8"))
+            self.assertTrue(
+                {
+                    "source-r01",
+                    "reconstruction-map-r01",
+                    "map-snapshot-i00",
+                    "reference-mask-r01",
+                    "uncertainty-mask-r01",
+                    "reference-component-mark-r01",
+                    "candidate-i00",
+                    "preview-i00",
+                    "overlay-i00",
+                    "diff-i00",
+                    "diagnostics-i00",
+                    "evaluation-i00",
+                }.issubset(artifacts)
+            )
+            for item in cleanup["artifacts"]:
+                self.assertEqual(set(item), {"logical_id", "sha256", "retention", "deleted_at"})
+                self.assertEqual(item["retention"], "deleted")
+                self.assertEqual(item["sha256"], artifacts[item["logical_id"]]["sha256"])
+                self.assertTrue(item["deleted_at"].endswith("Z"))
+
+    def test_final_report_publish_failure_preserves_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            run_dir = evaluation.parent
+            review = self._review(root)
+            real_write = pipeline_module.atomic_write_json
+
+            def fail_output(path, document):
+                if Path(path).name == "acceptance-report.json":
+                    raise OSError("disk failure")
+                return real_write(path, document)
+
+            with mock.patch.object(pipeline_module, "atomic_write_json", side_effect=fail_output):
+                with self.assertRaises(OSError):
+                    finalize_review(evaluation, review, root / "acceptance-report.json")
+
+            self.assertTrue(run_dir.exists())
+
+    def test_final_report_preserves_normalization_and_stop_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            review = self._review(root)
+            output = root / "acceptance-report.json"
+
+            finalize_review(evaluation, review, output)
+            report = json.loads(output.read_text())
+
+            self.assertIn("estimator", report["normalization"])
+            self.assertIn("estimator_basis", report["normalization"])
+            self.assertEqual(report["stop_reason"], "accepted")
+
+    def test_explicit_normalization_override_and_reason_survive_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            draft = json.loads(draft_path.read_text())
+            draft["normalization"]["estimator_basis"] = "explicit_override"
+            draft["normalization"]["explicit_overrides"] = {
+                "background_luminance": 1,
+                "foreground_luminance": 0,
+                "reason": "confirmed transparent-black foreground",
+            }
+            draft_path.write_text(json.dumps(draft))
+            reference = root / "reference"
+            prepare_reference(source, draft_path, reference)
+            candidate = root / "candidate.svg"
+            candidate.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                '<rect id="mark" x="16" y="16" width="32" height="32" fill="currentColor"/>'
+                "</svg>"
+            )
+            run_dir = root / "run"
+            evaluate_candidate(
+                reference / "reconstruction-map-r01.json",
+                candidate,
+                0,
+                run_dir,
+                renderer=fake_renderer,
+                diagnostic_renderer=fake_diagnostics,
+            )
+            review = self._review(root)
+            output = root / "acceptance-report.json"
+
+            finalize_review(run_dir / "evaluation-i00.json", review, output)
+            normalization = json.loads(output.read_text())["normalization"]
+
+            self.assertEqual(normalization["estimator_basis"], "explicit_override")
+            self.assertEqual(
+                normalization["explicit_overrides"]["reason"],
+                "confirmed transparent-black foreground",
+            )
+
+    def test_semantic_review_validation_and_merge_use_one_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluation = self._evaluation(root)
+            review = self._review(root)
+            real_validate = pipeline_module.validate_document
+
+            def mutate_after_validate(document, schema_name):
+                result = real_validate(document, schema_name)
+                if schema_name == "semantic-review":
+                    replacement = json.loads(review.read_text())
+                    replacement["gates"][0]["state"] = "fail"
+                    review.write_text(json.dumps(replacement))
+                return result
+
+            with mock.patch.object(
+                pipeline_module, "validate_document", side_effect=mutate_after_validate
+            ):
+                summary = finalize_review(
+                    evaluation, review, root / "acceptance-report.json"
+                )
+
+            self.assertEqual(summary["status"], "accepted")
 
 
 if __name__ == "__main__":

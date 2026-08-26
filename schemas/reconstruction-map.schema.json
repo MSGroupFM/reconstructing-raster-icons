@@ -670,34 +670,35 @@
                 "minimum": 0
               }
             },
-            "allOf": [
+            "oneOf": [
               {
-                "if": {
-                  "properties": {
-                    "geometry": {
-                      "const": "circle"
-                    }
+                "properties": {
+                  "geometry": {
+                    "const": "circle"
                   }
                 },
-                "then": {
-                  "required": [
-                    "radius"
+                "required": [
+                  "radius"
+                ],
+                "not": {
+                  "anyOf": [
+                    {"required": ["radius_x"]},
+                    {"required": ["radius_y"]}
                   ]
                 }
               },
               {
-                "if": {
-                  "properties": {
-                    "geometry": {
-                      "const": "ellipse"
-                    }
+                "properties": {
+                  "geometry": {
+                    "const": "ellipse"
                   }
                 },
-                "then": {
-                  "required": [
-                    "radius_x",
-                    "radius_y"
-                  ]
+                "required": [
+                  "radius_x",
+                  "radius_y"
+                ],
+                "not": {
+                  "required": ["radius"]
                 }
               }
             ]

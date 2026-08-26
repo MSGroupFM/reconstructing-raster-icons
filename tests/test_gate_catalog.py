@@ -79,6 +79,21 @@ class GateCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "UTC"):
             GateResult("auto.svg.render", "automatic", "pass", evidence(), "renderer", datetime(2026, 8, 26))
 
+    def test_gate_result_rejects_malformed_public_boundary_types(self) -> None:
+        valid = ("auto.svg.render", "automatic", "pass", evidence(), "renderer", NOW)
+        mutations = (
+            ([], *valid[1:]),
+            (valid[0], [], *valid[2:]),
+            (*valid[:2], [], *valid[3:]),
+            (*valid[:3], {}, *valid[4:]),
+            (*valid[:4], 1, valid[5]),
+            (*valid[:5], "2026-08-26T00:00:00Z"),
+        )
+
+        for arguments in mutations:
+            with self.subTest(arguments=arguments), self.assertRaises((TypeError, ValueError)):
+                GateResult(*arguments)  # type: ignore[arg-type]
+
     def test_automatic_evaluation_requires_every_id_exactly_once(self) -> None:
         checks = automatic_checks()
         checks.pop("auto.svg.render")

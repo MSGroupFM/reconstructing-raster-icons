@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 
 BoolMask = NDArray[np.bool_]
 Point = tuple[float, float]
-HAUSDORFF_ROOT_WORK_BUDGET = 250_000_000
+HAUSDORFF_DISTANCE_EVALUATION_BUDGET = 250_000_000
 
 
 class PathIntegrityError(ValueError):
@@ -446,8 +446,13 @@ def flatten_svg_path(path_data: str, delta: float) -> tuple[PolylineSubpath, ...
             points.extend(flattened if not points else flattened[1:])
         if not points:
             continue
+        deduplicated = [points[0]]
+        deduplicated.extend(point for point in points[1:] if point != deduplicated[-1])
+        points = deduplicated
         if closed and points[-1] != points[0]:
             points.append(points[0])
+        if len(points) < 2 or any(first == second for first, second in zip(points, points[1:])):
+            raise PathIntegrityError("flattened path contains a zero-length segment")
         result.append(PolylineSubpath(tuple(points), closed))
     if not result:
         raise PathIntegrityError("path contains no drawable subpaths")
@@ -564,26 +569,39 @@ def symmetric_hausdorff(
 ) -> float:
     """Return exact continuous-segment Hausdorff distance within a work budget.
 
-    ``HAUSDORFF_ROOT_WORK_BUDGET`` bounds lower-envelope root candidates before
-    the quartic worst case begins.  It is a computation guard derived from both
-    segment sets, not a universal visual node-count limit.
+    For a directed ``n``-by-``m`` comparison the conservative dominant-work
+    estimate is ``n*m*((2m+2) + 2*(2m+1)*C(m,2))`` point-to-target-segment
+    distance evaluations: projection breakpoints plus both possible roots for
+    every polynomial pair in every interval, each scanned against all targets.
+    Both directions count toward ``HAUSDORFF_DISTANCE_EVALUATION_BUDGET``.
+    This is a computation guard, not a universal visual node-count limit.
     """
     first_segments, second_segments = _segments(first), _segments(second)
     if not first_segments or not second_segments:
         raise ValueError("both polyline collections must contain non-degenerate segments")
     first_count, second_count = len(first_segments), len(second_segments)
-    estimated_root_work = (
-        first_count * (2 * second_count + 1) * (second_count * (second_count - 1) // 2)
-        + second_count * (2 * first_count + 1) * (first_count * (first_count - 1) // 2)
-    )
-    if estimated_root_work > HAUSDORFF_ROOT_WORK_BUDGET:
+    estimated_distance_work = _hausdorff_operation_estimate(first_count, second_count)
+    if estimated_distance_work > HAUSDORFF_DISTANCE_EVALUATION_BUDGET:
         raise PathIntegrityError(
-            "continuous Hausdorff work budget exceeded "
-            f"({estimated_root_work} > {HAUSDORFF_ROOT_WORK_BUDGET} root candidates)"
+            "continuous Hausdorff distance-evaluation budget exceeded "
+            f"({estimated_distance_work} > {HAUSDORFF_DISTANCE_EVALUATION_BUDGET})"
         )
     first_to_second = max(_directed_segment_hausdorff(segment, second_segments) for segment in first_segments)
     second_to_first = max(_directed_segment_hausdorff(segment, first_segments) for segment in second_segments)
     return max(first_to_second, second_to_first)
+
+
+def _hausdorff_operation_estimate(first_count: int, second_count: int) -> int:
+    """Conservative count of dominant distance evaluations in both directions."""
+    if first_count < 1 or second_count < 1:
+        raise ValueError("Hausdorff segment counts must be positive")
+
+    def directed(source_count: int, target_count: int) -> int:
+        projection_candidates = 2 * target_count + 2
+        root_candidates = 2 * (2 * target_count + 1) * (target_count * (target_count - 1) // 2)
+        return source_count * target_count * (projection_candidates + root_candidates)
+
+    return directed(first_count, second_count) + directed(second_count, first_count)
 
 
 def _douglas_peucker(points: tuple[Point, ...], tolerance: float) -> tuple[Point, ...]:
@@ -642,27 +660,115 @@ def _containment_signature(subpaths: Sequence[PolylineSubpath]) -> tuple[tuple[i
     )
 
 
-def _intersection_signature(subpaths: Sequence[PolylineSubpath]) -> tuple[tuple[int, int], ...]:
-    signature: list[tuple[int, int]] = []
-    segment_sets = [tuple(zip(path.points, path.points[1:])) for path in subpaths]
-    for first_index, first_segments in enumerate(segment_sets):
-        for second_index in range(first_index, len(segment_sets)):
-            second_segments = segment_sets[second_index]
-            intersects = False
+def _cross(first: Point, second: Point) -> float:
+    return first[0] * second[1] - first[1] * second[0]
+
+
+def _segment_intersection_events(
+    first: tuple[Point, Point], second: tuple[Point, Point]
+) -> tuple[tuple[str, float, float, float, float], ...]:
+    """Return point or overlap events with local parameters on both segments."""
+    a, b = first
+    c, d = second
+    first_vector = (b[0] - a[0], b[1] - a[1])
+    second_vector = (d[0] - c[0], d[1] - c[1])
+    offset = (c[0] - a[0], c[1] - a[1])
+    denominator = _cross(first_vector, second_vector)
+
+    def snap(parameter: float) -> float:
+        if abs(parameter) <= 16.0 * math.ulp(max(1.0, abs(parameter))):
+            return 0.0
+        if abs(parameter - 1.0) <= 16.0 * math.ulp(max(1.0, abs(parameter))):
+            return 1.0
+        return parameter
+
+    if denominator != 0.0:
+        first_parameter = snap(_cross(offset, second_vector) / denominator)
+        second_parameter = snap(_cross(offset, first_vector) / denominator)
+        if 0.0 <= first_parameter <= 1.0 and 0.0 <= second_parameter <= 1.0:
+            return (("transverse", first_parameter, first_parameter, second_parameter, second_parameter),)
+        return ()
+    if _cross(offset, first_vector) != 0.0:
+        return ()
+    first_squared = first_vector[0] ** 2 + first_vector[1] ** 2
+    second_squared = second_vector[0] ** 2 + second_vector[1] ** 2
+    if first_squared == 0.0 or second_squared == 0.0:
+        return ()
+    first_c = (offset[0] * first_vector[0] + offset[1] * first_vector[1]) / first_squared
+    first_d = first_c + (
+        second_vector[0] * first_vector[0] + second_vector[1] * first_vector[1]
+    ) / first_squared
+    low, high = max(0.0, min(first_c, first_d)), min(1.0, max(first_c, first_d))
+    low, high = snap(low), snap(high)
+    if low > high:
+        return ()
+
+    def second_parameter(first_parameter: float) -> float:
+        point = (a[0] + first_parameter * first_vector[0], a[1] + first_parameter * first_vector[1])
+        return snap(
+            ((point[0] - c[0]) * second_vector[0] + (point[1] - c[1]) * second_vector[1])
+            / second_squared
+        )
+
+    second_low, second_high = second_parameter(low), second_parameter(high)
+    kind = "touch" if low == high else "overlap"
+    return ((kind, low, high, second_low, second_high),)
+
+
+def _path_parameter_data(path: PolylineSubpath) -> tuple[tuple[tuple[Point, Point], ...], tuple[float, ...], float]:
+    segments = tuple(zip(path.points, path.points[1:]))
+    lengths = tuple(_distance(*segment) for segment in segments)
+    total = sum(lengths)
+    prefixes = [0.0]
+    for length in lengths:
+        prefixes.append(prefixes[-1] + length)
+    return segments, tuple(prefixes), total
+
+
+def _intersection_signature(
+    subpaths: Sequence[PolylineSubpath],
+) -> tuple[tuple[int, int, tuple[tuple[str, float, float, float, float], ...]], ...]:
+    """Preserve intersection count, type, multiplicity and order per path pair."""
+    path_data = [_path_parameter_data(path) for path in subpaths]
+    signature: list[tuple[int, int, tuple[tuple[str, float, float, float, float], ...]]] = []
+    for first_index, (first_segments, first_prefixes, first_total) in enumerate(path_data):
+        for second_index in range(first_index, len(path_data)):
+            second_segments, second_prefixes, second_total = path_data[second_index]
+            events: set[tuple[str, float, float, float, float]] = set()
             for left_index, first_segment in enumerate(first_segments):
                 for right_index, second_segment in enumerate(second_segments):
                     if first_index == second_index:
-                        if abs(left_index - right_index) <= 1:
+                        if left_index >= right_index or abs(left_index - right_index) <= 1:
                             continue
                         if subpaths[first_index].closed and {left_index, right_index} == {0, len(first_segments) - 1}:
                             continue
-                    if _segments_intersect(first_segment, second_segment):
-                        intersects = True
-                        break
-                if intersects:
-                    break
-            if intersects:
-                signature.append((first_index, second_index))
+                    for kind, first_low, first_high, second_low, second_high in _segment_intersection_events(
+                        first_segment, second_segment
+                    ):
+                        first_positions = (
+                            (first_prefixes[left_index] + first_low * _distance(*first_segment)) / first_total,
+                            (first_prefixes[left_index] + first_high * _distance(*first_segment)) / first_total,
+                        )
+                        second_positions = (
+                            (second_prefixes[right_index] + second_low * _distance(*second_segment)) / second_total,
+                            (second_prefixes[right_index] + second_high * _distance(*second_segment)) / second_total,
+                        )
+                        endpoint = any(
+                            within_tolerance(abs(position), 0.0) or within_tolerance(abs(position - 1.0), 0.0)
+                            for position in (*first_positions, *second_positions)
+                        )
+                        event_kind = "endpoint" if kind != "overlap" and endpoint else kind
+                        events.add(
+                            (
+                                event_kind,
+                                round(first_positions[0], 12),
+                                round(first_positions[1], 12),
+                                round(second_positions[0], 12),
+                                round(second_positions[1], 12),
+                            )
+                        )
+            if events:
+                signature.append((first_index, second_index, tuple(sorted(events))))
     return tuple(signature)
 
 
@@ -822,9 +928,17 @@ def evaluate_geometry_constraints(
         component_id = str(constraint["component_id"])
         center = map_point(constraint["center"])
         if constraint["geometry"] == "circle":
+            if "radius" not in constraint or "radius_x" in constraint or "radius_y" in constraint:
+                raise ValueError("radial circle variant requires only radius")
             radius_x = radius_y = float(constraint["radius"])
-        else:
+        elif constraint["geometry"] == "ellipse":
+            if "radius" in constraint or "radius_x" not in constraint or "radius_y" not in constraint:
+                raise ValueError("radial ellipse variant requires only radius_x and radius_y")
             radius_x, radius_y = float(constraint["radius_x"]), float(constraint["radius_y"])
+        else:
+            raise ValueError("radial constraint has an unknown geometry variant")
+        if not math.isfinite(radius_x) or not math.isfinite(radius_y) or radius_x <= 0.0 or radius_y <= 0.0:
+            raise ValueError("radial variant radii must be finite and positive")
         deviations = []
         for x, y in points[component_id]:
             normalized_radius = math.hypot((x - center[0]) / radius_x, (y - center[1]) / radius_y)

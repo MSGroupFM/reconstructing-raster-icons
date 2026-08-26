@@ -9,8 +9,10 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reconstructing_raster_icons.geometry import (  # noqa: E402
+    HAUSDORFF_DISTANCE_EVALUATION_BUDGET,
     PathIntegrityError,
     PolylineSubpath,
+    _hausdorff_operation_estimate,
     evaluate_geometry_constraints,
     flatten_svg_path,
     simplify_subpaths,
@@ -39,6 +41,18 @@ class PathFlatteningTests(unittest.TestCase):
     def test_zero_length_segment_fails_path_integrity(self) -> None:
         with self.assertRaisesRegex(PathIntegrityError, "zero-length"):
             flatten_svg_path("M 0 0 L 0 0", delta=1.0)
+
+    def test_flattened_curve_has_no_consecutive_duplicate_vertices(self) -> None:
+        subpath = flatten_svg_path("M0 0 C1 1 0 -1 -3 0", delta=6.4)[0]
+
+        self.assertTrue(all(first != second for first, second in zip(subpath.points, subpath.points[1:])))
+
+    def test_closed_flattened_path_has_one_non_degenerate_closure_segment(self) -> None:
+        subpath = flatten_svg_path("M0 0 L2 0 L2 2 L0 0 Z", delta=1.0)[0]
+
+        self.assertTrue(subpath.closed)
+        self.assertEqual(subpath.points.count((0.0, 0.0)), 2)
+        self.assertTrue(all(first != second for first, second in zip(subpath.points, subpath.points[1:])))
 
     def test_svg2_arc_conversion_handles_radius_correction_and_quadrants(self) -> None:
         subpath = flatten_svg_path("M 0 0 A 1 1 0 0 1 4 0", delta=0.05)[0]
@@ -106,12 +120,19 @@ class SimplificationTests(unittest.TestCase):
 
         self.assertAlmostEqual(symmetric_hausdorff((source,), targets), 5e-10, delta=2e-13)
 
-    def test_symmetric_hausdorff_fails_closed_before_pathological_root_work(self) -> None:
-        first = PolylineSubpath(tuple((float(index), float(index % 2)) for index in range(112)), False)
-        second = PolylineSubpath(tuple((float(index), float((index + 1) % 2)) for index in range(112)), False)
+    def test_hausdorff_operation_estimate_counts_roots_and_target_scans(self) -> None:
+        self.assertEqual(_hausdorff_operation_estimate(2, 3), 396)
 
-        with self.assertRaisesRegex(PathIntegrityError, "Hausdorff work budget"):
-            symmetric_hausdorff((first,), (second,))
+    def test_symmetric_hausdorff_fails_closed_before_pathological_distance_work(self) -> None:
+        source = PolylineSubpath(((0.0, 0.0), (1.0, 0.0)), False)
+        targets = tuple(
+            PolylineSubpath(((float(index), -1.0), (float(index), 1.0)), False)
+            for index in range(110)
+        )
+
+        self.assertGreater(_hausdorff_operation_estimate(1, 110), HAUSDORFF_DISTANCE_EVALUATION_BUDGET)
+        with self.assertRaisesRegex(PathIntegrityError, "Hausdorff distance-evaluation budget"):
+            symmetric_hausdorff((source,), targets)
 
     def test_simplification_is_bounded_by_continuous_symmetric_hausdorff(self) -> None:
         original = PolylineSubpath(
@@ -132,6 +153,30 @@ class SimplificationTests(unittest.TestCase):
         simplified = simplify_subpaths((bent, short_crossbar), delta=2.2)
 
         self.assertEqual(simplified[0].points, bent.points)
+
+    def test_simplification_preserves_intersection_multiplicity_and_order(self) -> None:
+        zigzag = PolylineSubpath(
+            points=((-3.0, -0.1), (-1.0, 0.1), (1.0, -0.1), (3.0, 0.1)),
+            closed=False,
+        )
+        bar = PolylineSubpath(points=((-3.0, 0.0), (3.0, 0.0)), closed=False)
+
+        self.assertEqual(simplify_subpaths((zigzag, bar), delta=0.3), (zigzag, bar))
+
+    def test_simplification_preserves_self_intersection_multiplicity(self) -> None:
+        self_crossing = PolylineSubpath(
+            points=(
+                (-3.0, -0.1),
+                (-1.0, 0.1),
+                (1.0, -0.1),
+                (3.0, 0.1),
+                (3.0, 0.0),
+                (-3.0, 0.0),
+            ),
+            closed=False,
+        )
+
+        self.assertEqual(simplify_subpaths((self_crossing,), delta=0.3), (self_crossing,))
 
     def test_open_loop_cannot_collapse_to_a_degenerate_candidate(self) -> None:
         source = PolylineSubpath(points=((0.0, 0.0), (1.0, 0.0), (0.0, 0.0)), closed=False)
@@ -233,6 +278,31 @@ class GeometryConstraintTests(unittest.TestCase):
 
         self.assertTrue(equal.passed)
         self.assertFalse(over.passed)
+
+    def test_radial_evaluator_rejects_mixed_or_incomplete_variants(self) -> None:
+        component = {"circle": ((1.0, 0.0), (0.0, 1.0))}
+        mixed = {
+            "radial": [
+                {
+                    "component_id": "circle",
+                    "geometry": "circle",
+                    "center": (0.0, 0.0),
+                    "radius": 1.0,
+                    "radius_x": 1.0,
+                    "radius_y": 1.0,
+                    "tolerance": 0.0,
+                }
+            ]
+        }
+        incomplete = {
+            "radial": [
+                {"component_id": "circle", "geometry": "ellipse", "center": (0.0, 0.0), "radius_x": 1.0, "tolerance": 0.0}
+            ]
+        }
+
+        for constraints in (mixed, incomplete):
+            with self.subTest(constraints=constraints), self.assertRaisesRegex(ValueError, "radial.*variant"):
+                evaluate_geometry_constraints(component, constraints, delta=1.0)
 
 
 if __name__ == "__main__":

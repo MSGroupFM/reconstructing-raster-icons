@@ -236,6 +236,33 @@ class SchemaContractTests(unittest.TestCase):
             with self.assertRaises(jsonschema.ValidationError):
                 validate_document(document, schema_name)
 
+    def test_radial_constraint_variants_are_mutually_exclusive(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            circle = make_document()
+            circle["geometry_constraints"]["radial"] = [  # type: ignore[index]
+                {"component_id": "mark", "geometry": "circle", "center": [0.5, 0.5], "radius": 1, "tolerance": 0}
+            ]
+            validate_document(circle, schema_name)
+
+            ellipse = make_document()
+            ellipse["geometry_constraints"]["radial"] = [  # type: ignore[index]
+                {"component_id": "mark", "geometry": "ellipse", "center": [0.5, 0.5], "radius_x": 1, "radius_y": 2, "tolerance": 0}
+            ]
+            validate_document(ellipse, schema_name)
+
+            for invalid_radial in (
+                {"component_id": "mark", "geometry": "circle", "center": [0.5, 0.5], "radius": 1, "radius_x": 1, "tolerance": 0},
+                {"component_id": "mark", "geometry": "ellipse", "center": [0.5, 0.5], "radius": 1, "radius_x": 1, "radius_y": 2, "tolerance": 0},
+                {"component_id": "mark", "geometry": "ellipse", "center": [0.5, 0.5], "radius_x": 1, "tolerance": 0},
+            ):
+                invalid = make_document()
+                invalid["geometry_constraints"]["radial"] = [invalid_radial]  # type: ignore[index]
+                with self.subTest(schema=schema_name, radial=invalid_radial), self.assertRaises(jsonschema.ValidationError):
+                    validate_document(invalid, schema_name)
+
     def test_acceptance_report_includes_runtime_viewport_and_topology_nodes(self) -> None:
         report = accepted_report_fixture()
         for field in ("canonical_renderer", "topology_nodes"):

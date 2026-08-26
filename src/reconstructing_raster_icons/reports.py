@@ -111,20 +111,30 @@ class GateResult:
     timestamp: datetime
 
     def __post_init__(self) -> None:
+        if not isinstance(self.gate_id, str):
+            raise TypeError("gate_id must be a string")
         if self.gate_id not in MANDATORY_GATE_IDS:
             raise ValueError(f"unknown mandatory gate ID: {self.gate_id}")
         expected_kind = "automatic" if self.gate_id in AUTOMATIC_GATE_IDS else "semantic"
+        if not isinstance(self.kind, str):
+            raise TypeError("gate kind must be a string")
         if self.kind != expected_kind:
             raise ValueError(f"{self.gate_id} must have kind {expected_kind}")
         allowed = {"pass", "fail"} if self.kind == "automatic" else {"pass", "fail", "not_evaluated"}
+        if not isinstance(self.state, str):
+            raise TypeError("gate state must be a string")
         if self.state not in allowed:
             if self.kind == "automatic":
                 raise ValueError("automatic gate state must be pass or fail")
             raise ValueError("semantic gate state must be pass, fail, or not_evaluated")
         if not isinstance(self.evidence, GateEvidence):
             raise TypeError("gate evidence must be GateEvidence")
+        if not isinstance(self.evaluator, str):
+            raise TypeError("gate evaluator must be a string")
         if not self.evaluator:
             raise ValueError("gate evaluator must be nonempty")
+        if not isinstance(self.timestamp, datetime):
+            raise TypeError("gate timestamp must be a datetime")
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() != timezone.utc.utcoffset(self.timestamp):
             raise ValueError("gate timestamp must be timezone-aware UTC")
 

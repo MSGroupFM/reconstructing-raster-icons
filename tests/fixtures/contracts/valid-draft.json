@@ -8,7 +8,7 @@
   "accuracy_confirmed": true,
   "normalization": {"foreground_polarity": "dark", "background_decision": "transparent", "threshold": 0.5, "estimator_basis": "automatic", "estimator": {"background_luminance": 1, "dark_foreground_luminance": 0, "light_foreground_luminance": 1, "border_variance": 0, "dark_contrast": 1, "light_contrast": 0, "contrast": 1}},
   "viewport": {"aspect_ratio": "1:1", "grid": 64, "view_box": [0, 0, 64, 64], "fit_mode": "contain", "alignment": "center"},
-  "canonical_canvas": {"width": 64, "height": 64, "raster_width": 64, "raster_height": 64},
+  "canonical_canvas": {"width": 64, "height": 64, "raster_width": 1024, "raster_height": 1024},
   "target_sizes": [128, 64, 32, 24],
   "components": [{"component_id": "mark", "svg_id": "mark", "paint_type": "fill", "mandatory": true, "weight": 1, "source_mask_path": "masks/mark.png", "geometry": "polygon", "expected_hole_count": 0, "applicable_gates": ["auto.components.present", "semantic.components.complete"]}],
   "topology_facts": [],

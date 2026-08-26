@@ -163,7 +163,7 @@ def _validate_map_canvas(document: dict[str, object]) -> None:
     canvas = document["canonical_canvas"]
     if not isinstance(viewport, dict) or not isinstance(canvas, dict):
         raise ValidationError("map viewport and canonical_canvas must be objects")
-    _validate_canvas_relationships(viewport, canvas, enforce_raster_limit=False)
+    _validate_canvas_relationships(viewport, canvas)
 
 
 def _validate_report_canvas(report: dict[str, object]) -> None:
@@ -173,12 +173,10 @@ def _validate_report_canvas(report: dict[str, object]) -> None:
     canvas = viewport["canonical_canvas"]
     if not isinstance(canvas, dict):
         raise ValidationError("report canonical canvas must be an object")
-    _validate_canvas_relationships(viewport, canvas, enforce_raster_limit=True)
+    _validate_canvas_relationships(viewport, canvas)
 
 
-def _validate_canvas_relationships(
-    viewport: dict[str, object], canvas: dict[str, object], *, enforce_raster_limit: bool
-) -> None:
+def _validate_canvas_relationships(viewport: dict[str, object], canvas: dict[str, object]) -> None:
     try:
         width = _decimal(canvas["width"], "canonical_canvas.width")
         height = _decimal(canvas["height"], "canonical_canvas.height")
@@ -188,10 +186,18 @@ def _validate_canvas_relationships(
         declared_height = Decimal(ratio_height)
     except (KeyError, InvalidOperation, ValueError) as error:
         raise ValidationError("invalid viewport/canonical canvas relationship") from error
-    if width * declared_height != height * declared_width:
-        raise ValidationError("canonical canvas dimensions must equal the declared aspect ratio")
-    if max(width, height) != grid:
-        raise ValidationError("canonical canvas maximum side must equal viewport grid")
+    if declared_width >= declared_height:
+        expected_width = grid
+        expected_height = (grid * declared_height / declared_width).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+    else:
+        expected_width = (grid * declared_width / declared_height).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+        expected_height = grid
+    if width != expected_width or height != expected_height or min(width, height) < Decimal(1):
+        raise ValidationError("canonical canvas must be derived from the grid and declared aspect ratio")
     view_box = viewport.get("view_box")
     if not isinstance(view_box, list) or len(view_box) != 4:
         raise ValidationError("viewport view_box must contain four coordinates")
@@ -201,11 +207,22 @@ def _validate_canvas_relationships(
         raise ValidationError("view_box dimensions must equal canonical canvas dimensions")
     raster_width = _decimal(canvas["raster_width"], "canonical_canvas.raster_width")
     raster_height = _decimal(canvas["raster_height"], "canonical_canvas.raster_height")
-    if raster_width * declared_height != raster_height * declared_width:
-        raise ValidationError("canonical raster dimensions must equal the declared aspect ratio")
-    if enforce_raster_limit:
-        if max(raster_width, raster_height) > Decimal(1024):
-            raise ValidationError("acceptance raster maximum side must not exceed 1024")
+    if declared_width >= declared_height:
+        expected_raster_width = Decimal(1024)
+        expected_raster_height = (Decimal(1024) * declared_height / declared_width).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    else:
+        expected_raster_width = (Decimal(1024) * declared_width / declared_height).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+        expected_raster_height = Decimal(1024)
+    if (
+        raster_width != expected_raster_width
+        or raster_height != expected_raster_height
+        or min(raster_width, raster_height) < Decimal(64)
+    ):
+        raise ValidationError("canonical raster must be derived from the declared aspect ratio at 1024 maximum side")
 
 
 def _validate_topology_nodes(report: dict[str, object]) -> None:

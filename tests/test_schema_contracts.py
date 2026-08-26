@@ -70,7 +70,7 @@ class SchemaContractTests(unittest.TestCase):
             for ratio, width, height, raster_width, raster_height in (
                 ("1:16", 4, 64, 64, 1024),
                 ("16:1", 64, 4, 1024, 64),
-                ("2:16", 8, 64, 64, 512),
+                ("2:16", 8, 64, 128, 1024),
             ):
                 document = make_document()
                 document["viewport"]["aspect_ratio"] = ratio  # type: ignore[index]
@@ -333,8 +333,45 @@ class SchemaContractTests(unittest.TestCase):
         document = draft_fixture()
         document["viewport"]["aspect_ratio"] = "2:16"  # type: ignore[index]
         document["viewport"]["view_box"] = [0, 0, 8, 64]  # type: ignore[index]
-        document["canonical_canvas"] = {"width": 8, "height": 64, "raster_width": 64, "raster_height": 512}
+        document["canonical_canvas"] = {"width": 8, "height": 64, "raster_width": 128, "raster_height": 1024}
         validate_document(document, "reconstruction-map-draft")
+
+    def test_grid_and_raster_dimensions_are_derived_from_ratio(self) -> None:
+        cases = (
+            ("1:1", 64, 64, 1024, 1024),
+            ("3:2", 64, 42.666667, 1024, 683),
+            ("2:3", 42.666667, 64, 683, 1024),
+            ("16:9", 64, 36, 1024, 576),
+            ("9:16", 36, 64, 576, 1024),
+            ("7:11", 40.727273, 64, 652, 1024),
+        )
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            for ratio, width, height, raster_width, raster_height in cases:
+                document = make_document()
+                document["viewport"]["aspect_ratio"] = ratio  # type: ignore[index]
+                document["viewport"]["view_box"] = [0, 0, width, height]  # type: ignore[index]
+                document["canonical_canvas"] = {  # type: ignore[index]
+                    "width": width,
+                    "height": height,
+                    "raster_width": raster_width,
+                    "raster_height": raster_height,
+                }
+                validate_document(document, schema_name)
+
+        for ratio, width, height, raster_width, raster_height in cases:
+            report = accepted_report_fixture()
+            report["viewport"]["aspect_ratio"] = ratio  # type: ignore[index]
+            report["viewport"]["view_box"] = [0, 0, width, height]  # type: ignore[index]
+            report["viewport"]["canonical_canvas"] = {  # type: ignore[index]
+                "width": width,
+                "height": height,
+                "raster_width": raster_width,
+                "raster_height": raster_height,
+            }
+            validate_document(report, "acceptance-report")
 
     def test_topology_nodes_cover_components_once_with_expected_holes(self) -> None:
         report = accepted_report_fixture()

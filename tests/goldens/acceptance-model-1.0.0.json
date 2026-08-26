@@ -1,4 +1,5 @@
 {
+  "authority": "pixel_oracle",
   "metric_cases": {
     "analytic-fill-identity": {
       "identity": true,
@@ -54,7 +55,7 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "status": "incomplete"
+      "oracle_state": "semantic_review_pending"
     },
     "impossible-target": {
       "gates": {
@@ -77,7 +78,7 @@
         "silhouette": 97.070312,
         "topology": 100.000000
       },
-      "status": "not_accepted"
+      "oracle_state": "target_below"
     },
     "missing-component": {
       "gates": {
@@ -100,7 +101,7 @@
         "silhouette": 99.951196,
         "topology": 100.000000
       },
-      "status": "not_accepted"
+      "oracle_state": "automatic_gate_failure"
     },
     "multicolor-rejection": {
       "gates": {
@@ -123,7 +124,7 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "status": "not_accepted"
+      "oracle_state": "automatic_gate_failure"
     },
     "noisy-antialias": {
       "gates": {
@@ -146,7 +147,7 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "status": "incomplete"
+      "oracle_state": "semantic_review_pending"
     },
     "occlusion-overlap": {
       "gates": {
@@ -169,7 +170,7 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "status": "incomplete"
+      "oracle_state": "semantic_review_pending"
     },
     "open-stroke": {
       "gates": {
@@ -192,7 +193,7 @@
         "silhouette": 99.990759,
         "topology": 100.000000
       },
-      "status": "incomplete"
+      "oracle_state": "semantic_review_pending"
     },
     "organic-curve": {
       "gates": {
@@ -215,7 +216,7 @@
         "silhouette": 94.088812,
         "topology": 100.000000
       },
-      "status": "not_accepted"
+      "oracle_state": "target_below"
     },
     "ring-hole": {
       "gates": {
@@ -238,7 +239,7 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "status": "incomplete"
+      "oracle_state": "semantic_review_pending"
     },
     "widescreen-16x9": {
       "gates": {
@@ -261,9 +262,10 @@
         "silhouette": 100.000000,
         "topology": 100.000000
       },
-      "status": "incomplete"
+      "oracle_state": "semantic_review_pending"
     }
   },
+  "production_canonical_environment": false,
   "semantic_gate_defaults": {
     "semantic.ambiguities": "not_evaluated",
     "semantic.components.complete": "not_evaluated",

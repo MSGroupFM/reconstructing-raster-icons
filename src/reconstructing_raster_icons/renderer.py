@@ -293,7 +293,13 @@ def _verify_install(lock: RendererLock, observed: dict[str, Any]) -> dict[str, O
         package_lock.get("lockfileVersion") != 3
         or package_lock.get("requires") is not True
         or not isinstance(root_record, dict)
-        or root_record.get("dependencies") != {CANONICAL_PACKAGE: CANONICAL_PACKAGE_VERSION}
+        or root_record.get("dependencies")
+        != {CANONICAL_PACKAGE: CANONICAL_PACKAGE_VERSION, "node": CANONICAL_NODE_VERSION}
+        or root_record.get("optionalDependencies")
+        != {
+            record["package"]: record["package_version"]
+            for record in lock.node_binaries.values()
+        }
         or root_record.get("engines") != {"node": CANONICAL_NODE_VERSION}
     ):
         raise RendererLockError("package-lock root contract is not canonical")
@@ -306,6 +312,21 @@ def _verify_install(lock: RendererLock, observed: dict[str, Any]) -> dict[str, O
         package_record.get(key) != value for key, value in expected_record.items()
     ):
         raise RendererLockError("package-lock renderer version, integrity, or license mismatch")
+    for platform_key, node_record in lock.node_binaries.items():
+        locked_node = package_lock["packages"].get(f"node_modules/{node_record['package']}")
+        system, architecture = platform_key.split("-", 1)
+        if not isinstance(locked_node, dict) or any(
+            locked_node.get(key) != value
+            for key, value in {
+                "version": node_record["package_version"],
+                "integrity": node_record["package_integrity"],
+                "cpu": architecture,
+                "optional": True,
+                "os": system,
+                "bin": {"node": "bin/node"},
+            }.items()
+        ):
+            raise RendererLockError("package-lock platform Node contract is not canonical")
 
     runner_source = Path(os.path.abspath(_RUNNER_PATH))
     repository = Path(os.path.abspath(_REPOSITORY))
@@ -382,24 +403,28 @@ def _node_package_identity(
         raise RendererLockError("Node binary package identity mismatch")
 
 
-def _node_binary(lock: RendererLock, platform_key: str, observed: dict[str, Any]) -> OpenedArtifact:
+def resolve_canonical_node(
+    lock: RendererLock,
+    platform_key: str,
+    observed: dict[str, Any] | None = None,
+) -> OpenedArtifact:
+    """Resolve only the repo-provisioned or explicitly configured lock-matching Node."""
+    evidence = observed if observed is not None else {}
     configured = os.environ.get("RECONSTRUCTING_RASTER_ICONS_NODE")
-    selected = configured or shutil.which("node")
-    if not selected:
-        raise RendererLockError("canonical Node executable is unavailable")
+    selected = Path(configured) if configured else _REPOSITORY / "node_modules" / "node" / "bin" / "node"
     node = _safe_open_bytes(
-        Path(selected),
+        selected,
         "canonical Node executable",
         256 * 1024 * 1024,
         executable=True,
     )
-    observed["node_sha256"] = node.sha256
+    evidence["node_sha256"] = node.sha256
     record = lock.node_binaries[platform_key]
     if not _is_native_bytes(node.data):
         raise RendererLockError("canonical Node executable is not a native executable")
     if node.sha256 != record["executable_sha256"]:
         raise RendererLockError("canonical Node executable hash mismatch")
-    _node_package_identity(node, record, observed)
+    _node_package_identity(node, record, evidence)
     return node
 
 
@@ -682,7 +707,7 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         expected = _expected_evidence(platform_key)
         lock = load_renderer_lock(_LOCK_PATH)
         artifacts = _verify_install(lock, observed)
-        node_source = _node_binary(lock, platform_key, observed)
+        node_source = resolve_canonical_node(lock, platform_key, observed)
         preexec = _memory_preexec()
         _probe_memory_preexec(preexec)
         workspace_path = Path(workspace)

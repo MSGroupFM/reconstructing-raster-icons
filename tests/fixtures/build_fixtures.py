@@ -556,7 +556,7 @@ def build(root: Path) -> None:
         {
             "corpus_version": "1.0.0",
             "provenance": "synthetic-original",
-            "renderer_mode": "pinned-node22-resvg-wasm-2.6.2-test-contract",
+            "renderer_mode": "pinned-node22-resvg-wasm-2.6.2-pixel-oracle",
             "fixture_classes": [
                 "analytic-fill",
                 "open-stroke-caps-joins",

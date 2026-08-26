@@ -30,7 +30,7 @@ from reconstructing_raster_icons.safe_svg import validate_svg
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-EXACT_NODE = Path("/private/tmp/reconstructing-raster-icons-node/node_modules/node/bin/node")
+EXACT_NODE = REPOSITORY / "node_modules" / "node" / "bin" / "node"
 CANONICAL_RUNNER_SHA256 = "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a"
 
 
@@ -258,6 +258,23 @@ class RendererTests(unittest.TestCase):
     def test_nonexact_root_package_lock_contract_is_noncanonical(self) -> None:
         package_lock = json.loads((REPOSITORY / "package-lock.json").read_text(encoding="utf-8"))
         package_lock["packages"][""]["dependencies"]["@resvg/resvg-wasm"] = "^2.6.2"
+        fixture = validate_svg(REPOSITORY / "tests" / "fixtures" / "renderer" / "square.svg")
+        with TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            mutated_lock = temporary / "package-lock.json"
+            mutated_lock.write_text(json.dumps(package_lock), encoding="utf-8")
+            with (
+                patch.object(renderer_module, "_PACKAGE_LOCK_PATH", mutated_lock),
+                patch.dict(os.environ, {"RECONSTRUCTING_RASTER_ICONS_NODE": str(EXACT_NODE)}),
+            ):
+                result = render_canonical(fixture, (128, 128), temporary)
+        self.assertEqual(result.status, Status.NON_CANONICAL)
+        self.assertIn("package-lock", result.diagnostic)
+
+    @unittest.skipUnless(EXACT_NODE.is_file(), "exact Node 22.14.0 fixture is unavailable")
+    def test_nonexact_platform_node_lock_contract_is_noncanonical(self) -> None:
+        package_lock = json.loads((REPOSITORY / "package-lock.json").read_text(encoding="utf-8"))
+        package_lock["packages"][""]["optionalDependencies"]["node-linux-x64"] = "^22.14.0"
         fixture = validate_svg(REPOSITORY / "tests" / "fixtures" / "renderer" / "square.svg")
         with TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)

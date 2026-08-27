@@ -15,11 +15,9 @@ const baseline = {
   allowed_write_capability: true,
   child_capability: false,
   worker_capability: false,
-  network_capability: false,
   filesystem_allowed: true,
   filesystem_denial: "ERR_ACCESS_DENIED",
   subprocess_denial: "ERR_ACCESS_DENIED",
-  network_denial: "EPERM",
 };
 const mutations = {
   permission_type: ["permission_type", "undefined"],
@@ -28,11 +26,9 @@ const mutations = {
   allowed_write_capability: ["allowed_write_capability", false],
   child_capability: ["child_capability", true],
   worker_capability: ["worker_capability", true],
-  network_capability: ["network_capability", true],
   filesystem_allowed: ["filesystem_allowed", "ERR_ACCESS_DENIED"],
   filesystem_denial: ["filesystem_denial", "ALLOWED"],
   subprocess_denial: ["subprocess_denial", "ALLOWED"],
-  network_denial: ["network_denial", "ECONNREFUSED"],
 };
 let emitted;
 const dependencies = {

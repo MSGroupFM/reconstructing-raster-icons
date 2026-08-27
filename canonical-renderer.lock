@@ -1,6 +1,6 @@
 {
   "lock_version": 1,
-  "acceptance_model_version": "1.0.0",
+  "acceptance_model_version": "1.0.1",
   "node_version": "22.14.0",
   "node_binaries": {
     "darwin-arm64": {
@@ -22,7 +22,7 @@
   "loader_file": "node_modules/@resvg/resvg-wasm/index.mjs",
   "loader_sha256": "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1",
   "runner_file": "scripts/render_svg.mjs",
-  "runner_sha256": "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a",
+  "runner_sha256": "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c77835290d693ee16a",
   "wasm_file": "node_modules/@resvg/resvg-wasm/index_bg.wasm",
   "wasm_sha256": "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70",
   "license": "MPL-2.0",

@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import net from "node:net";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { initWasm, Resvg } from "../node_modules/@resvg/resvg-wasm/index.mjs";
@@ -25,7 +24,6 @@ async function collectCapabilities({ inputPath, deniedPath, writeDirectory }) {
     allowed_write_capability: process.permission?.has("fs.write", writeDirectory),
     child_capability: process.permission?.has("child"),
     worker_capability: process.permission?.has("worker"),
-    network_capability: process.permission?.has("net"),
   };
   try {
     readFileSync(inputPath);
@@ -45,27 +43,6 @@ async function collectCapabilities({ inputPath, deniedPath, writeDirectory }) {
   } catch (error) {
     evidence.subprocess_denial = error?.code ?? "UNKNOWN";
   }
-  evidence.network_denial = await new Promise((resolve) => {
-    let settled = false;
-    let socket;
-    let timer;
-    const finish = (value) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        socket?.destroy();
-        resolve(value);
-      }
-    };
-    try {
-      socket = net.connect({ host: "127.0.0.1", port: 1 });
-      socket.once("connect", () => finish("ALLOWED"));
-      socket.once("error", (error) => finish(error?.code ?? "UNKNOWN"));
-      timer = setTimeout(() => finish("TIMEOUT"), 1000);
-    } catch (error) {
-      resolve(error?.code ?? "UNKNOWN");
-    }
-  });
   return evidence;
 }
 
@@ -77,7 +54,6 @@ function isolationFailure(evidence) {
     allowed_write_capability: true,
     child_capability: false,
     worker_capability: false,
-    network_capability: false,
     filesystem_allowed: true,
     filesystem_denial: "ERR_ACCESS_DENIED",
     subprocess_denial: "ERR_ACCESS_DENIED",
@@ -86,9 +62,6 @@ function isolationFailure(evidence) {
     if (evidence[key] !== value) {
       return key;
     }
-  }
-  if (!["EPERM", "EACCES", "ERR_ACCESS_DENIED"].includes(evidence.network_denial)) {
-    return "network_denial";
   }
   return null;
 }

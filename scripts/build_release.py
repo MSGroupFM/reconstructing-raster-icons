@@ -101,7 +101,7 @@ REQUIRED_RELEASE_FILES = frozenset(
         "scripts/validate_schemas.py",
         "scripts/validate_skill.py",
         "src/reconstructing_raster_icons/__init__.py",
-        "tests/goldens/acceptance-model-1.0.0.json",
+        "tests/goldens/acceptance-model-1.0.1.json",
         "tests/test_release_package.py",
         "tests/test_vtracer_workflow_contract.py",
     }

@@ -15,6 +15,14 @@ and this project uses semantic versioning.
   alternate-tracer fallbacks are prohibited.
 - Reports now explicitly distinguish a preview score from canonical acceptance
   and require target-size review at 128, 64, 32, and 24 px.
+- Acceptance model `1.0.1` updates canonical renderer attestation to match the actual Node `22.14.0`
+  Permission Model. The runner no longer performs an unsupported network probe,
+  and conformance failures report non-canonical evidence before checking PNG
+  artifacts.
+- GitHub Actions now exposes the repository's `src` layout explicitly instead
+  of relying on test import order.
+- README now documents the complete workflow and includes real phone and
+  strategy-board previews from before and after the VTracer-only process.
 
 ## 0.1.0 — local release candidate prepared 2026-08-26
 
@@ -25,7 +33,7 @@ Ubuntu x64 canonical zero-skip CI run.
 ### Added
 
 - Accuracy confirmation before any reconstruction write, with `98/100` as the
-  proposed default on composite acceptance model `1.0.0`.
+  proposed default on composite acceptance model `1.0.1`.
 - Monochrome reconstruction workflow with frozen maps, reference masks,
   component inventory, analytical/organic geometry guidance, eight-refinement
   limit, and stall detection.

@@ -44,7 +44,7 @@ CANONICAL_PACKAGE_VERSION = "2.6.2"
 CANONICAL_NPM_INTEGRITY = "sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw=="
 CANONICAL_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
 CANONICAL_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
-CANONICAL_RUNNER_SHA256 = "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a"
+CANONICAL_RUNNER_SHA256 = "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c77835290d693ee16a"
 CANONICAL_LICENSE = "MPL-2.0"
 RENDER_TIMEOUT_SECONDS = 15
 MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
@@ -162,7 +162,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def load_renderer_lock(path: Path) -> RendererLock:
-    """Load only the exact renderer lock published for acceptance model 1.0.0."""
+    """Load only the exact renderer lock published for acceptance model 1.0.1."""
     value = _load_json(Path(path))
     expected = {
         "lock_version": 1,
@@ -482,8 +482,8 @@ def _validate_combined_attestation(
     failure_keys = identity_keys | {"render_status", "isolation_failure"}
     full_keys = identity_keys | {
         "permission_type", "allowed_read_capability", "denied_read_capability",
-        "allowed_write_capability", "child_capability", "worker_capability", "network_capability",
-        "filesystem_allowed", "filesystem_denial", "subprocess_denial", "network_denial",
+        "allowed_write_capability", "child_capability", "worker_capability",
+        "filesystem_allowed", "filesystem_denial", "subprocess_denial",
         "render_status", "render_error", "denied_path",
     }
     if not isinstance(evidence, dict):
@@ -506,8 +506,7 @@ def _validate_combined_attestation(
         allowed_failures = {
             "permission_type", "allowed_read_capability", "denied_read_capability",
             "allowed_write_capability", "child_capability", "worker_capability",
-            "network_capability", "filesystem_allowed", "filesystem_denial",
-            "subprocess_denial", "network_denial", "probe_exception",
+            "filesystem_allowed", "filesystem_denial", "subprocess_denial", "probe_exception",
         }
         if (
             evidence["render_status"] != "isolation_failure"
@@ -523,7 +522,6 @@ def _validate_combined_attestation(
         "allowed_write_capability": True,
         "child_capability": False,
         "worker_capability": False,
-        "network_capability": False,
         "filesystem_allowed": True,
         "filesystem_denial": "ERR_ACCESS_DENIED",
         "subprocess_denial": "ERR_ACCESS_DENIED",
@@ -531,8 +529,6 @@ def _validate_combined_attestation(
     }
     if any(evidence.get(key) != value for key, value in exact.items()):
         raise RendererLockError("Node renderer attestation capability mismatch")
-    if evidence["network_denial"] not in {"EPERM", "EACCES", "ERR_ACCESS_DENIED"}:
-        raise RendererLockError("Node renderer attestation did not deny network access")
     if evidence["render_status"] not in {"ok", "error"}:
         raise RendererLockError("Node renderer attestation has an invalid render status")
     if evidence["render_status"] == "ok" and evidence["render_error"] is not None:

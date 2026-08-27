@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from reconstructing_raster_icons.constants import Status
+from reconstructing_raster_icons.constants import ACCEPTANCE_MODEL_VERSION, Status
 import reconstructing_raster_icons.renderer as renderer_module
 from reconstructing_raster_icons.renderer import (
     CANONICAL_LOADER_SHA256,
@@ -31,10 +31,16 @@ from reconstructing_raster_icons.safe_svg import validate_svg
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 EXACT_NODE = REPOSITORY / "node_modules" / "node" / "bin" / "node"
-CANONICAL_RUNNER_SHA256 = "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a"
+CANONICAL_RUNNER_SHA256 = "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c77835290d693ee16a"
 
 
 class RendererTests(unittest.TestCase):
+    def test_node_22_runner_does_not_claim_unsupported_network_isolation(self) -> None:
+        source = (REPOSITORY / "scripts" / "render_svg.mjs").read_text(encoding="utf-8")
+        self.assertNotIn('from "node:net"', source)
+        self.assertNotIn("network_capability", source)
+        self.assertNotIn("network_denial", source)
+
     @unittest.skipUnless(EXACT_NODE.is_file(), "exact Node 22.14.0 fixture is unavailable")
     def test_runner_gates_every_isolation_mismatch_before_wasm_and_output(self) -> None:
         harness = REPOSITORY / "tests" / "fixtures" / "renderer" / "runner_isolation_harness.mjs"
@@ -45,11 +51,9 @@ class RendererTests(unittest.TestCase):
             "allowed_write_capability",
             "child_capability",
             "worker_capability",
-            "network_capability",
             "filesystem_allowed",
             "filesystem_denial",
             "subprocess_denial",
-            "network_denial",
             "probe_exception",
         )
         for case in cases:
@@ -124,6 +128,7 @@ class RendererTests(unittest.TestCase):
     def test_lock_matches_the_binding_renderer_contract(self) -> None:
         raw_lock = json.loads((REPOSITORY / "canonical-renderer.lock").read_text(encoding="utf-8"))
         lock = load_renderer_lock(REPOSITORY / "canonical-renderer.lock")
+        self.assertEqual(raw_lock.get("acceptance_model_version"), ACCEPTANCE_MODEL_VERSION)
         self.assertEqual(lock.node_version, CANONICAL_NODE_VERSION)
         self.assertEqual(lock.package_integrity, CANONICAL_NPM_INTEGRITY)
         self.assertEqual(lock.wasm_sha256, CANONICAL_WASM_SHA256)
@@ -229,7 +234,6 @@ class RendererTests(unittest.TestCase):
                         self.assertEqual(attestation["platform"], "linux")
                         self.assertEqual(attestation["architecture"], "x64")
                         self.assertEqual(attestation["filesystem_denial"], "ERR_ACCESS_DENIED")
-                        self.assertEqual(attestation["network_denial"], "EPERM")
                         self.assertEqual(attestation["subprocess_denial"], "ERR_ACCESS_DENIED")
                         self.assertEqual(attestation["executable_magic"], "7f454c46")
                         self.assertEqual(attestation["executable_mode"], "0o500")
@@ -541,11 +545,9 @@ class RendererTests(unittest.TestCase):
                     "allowed_write_capability": True,
                     "child_capability": False,
                     "worker_capability": False,
-                    "network_capability": False,
                     "filesystem_allowed": True,
                     "filesystem_denial": "ERR_ACCESS_DENIED",
                     "subprocess_denial": "ERR_ACCESS_DENIED",
-                    "network_denial": "EPERM",
                     "render_status": "ok",
                     "render_error": None,
                     "denied_path": denied_path,

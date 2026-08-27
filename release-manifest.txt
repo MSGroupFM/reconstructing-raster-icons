@@ -10,6 +10,10 @@ SKILL.md
 THIRD_PARTY_NOTICES.md
 agents/openai.yaml
 canonical-renderer.lock
+docs/examples/strategy-board-before.png
+docs/examples/strategy-board-vtracer.png
+docs/examples/vintage-phone-before.png
+docs/examples/vintage-phone-vtracer.png
 docs/provenance.md
 docs/releases/v0.1.0.md
 package-lock.json
@@ -124,7 +128,7 @@ tests/fixtures/security/external-image.svg
 tests/fixtures/security/oversize-side.png
 tests/fixtures/security/processing-instruction.svg
 tests/fixtures/security/script.svg
-tests/goldens/acceptance-model-1.0.0.json
+tests/goldens/acceptance-model-1.0.1.json
 tests/test_cli.py
 tests/test_component_metrics.py
 tests/test_conformance.py

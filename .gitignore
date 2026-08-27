@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 node_modules/
+.DS_Store
+.idea/

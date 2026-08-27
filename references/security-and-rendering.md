@@ -22,7 +22,7 @@ A security or allowlist failure stops before rendering and yields `invalid_input
 
 ## Canonical renderer
 
-Acceptance model `1.0.0` requires the exact `canonical-renderer.lock`:
+Acceptance model `1.0.1` requires the exact `canonical-renderer.lock`:
 
 - Node.js `22.14.0`;
 - `@resvg/resvg-wasm@2.6.2`;
@@ -32,7 +32,9 @@ Acceptance model `1.0.0` requires the exact `canonical-renderer.lock`:
 
 Use a transparent sRGB canvas; resolve `currentColor` to black; disable system fonts; render explicit dimensions with maximum side `1024`, no background or crop, and pinned shape/text rendering options. Browser, Inkscape, and native librsvg output is preview-only.
 
-Run the Node subprocess without network access, with read access limited to the candidate, pinned WASM/loader, runner, and unpredictable owner-only workspace. If hashes, Node version, permission model, file allowlist, timeout, or memory isolation cannot be proven, stop before render or report `non_canonical`; never label preview pixels accepted.
+Run the Node subprocess with read access limited to the candidate, pinned WASM/loader, runner, and unpredictable owner-only workspace. Node `22.14.0` restricts filesystem, child-process, and worker access through its Permission Model, but that version does not mediate network access. The hash-pinned runner imports no network module and initializes the pinned loader from already-read WASM bytes; the safe SVG subset rejects links and external resources before render. Canonical evidence must not claim runtime network denial. An OS network sandbox may add defense in depth, but it is not part of the cross-platform acceptance contract.
+
+If hashes, Node version, permission model, file allowlist, timeout, or memory isolation cannot be proven, stop before render or report `non_canonical`; never label preview pixels accepted. See the official [Node.js 22.14 Permission Model documentation](https://nodejs.org/download/release/v22.14.0/docs/api/permissions.html) for the exact scopes available in the pinned runtime.
 
 ## Artifacts and failures
 

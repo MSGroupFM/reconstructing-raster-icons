@@ -96,7 +96,7 @@ class ReleasePackageTests(unittest.TestCase):
             with zipfile.ZipFile(first_zip) as archive:
                 infos = archive.infolist()
                 names = [info.filename for info in infos]
-                self.assertEqual(len(names), 142)
+                self.assertEqual(len(names), 146)
                 self.assertEqual(
                     names,
                     (REPOSITORY / "release-manifest.txt").read_text(encoding="utf-8").splitlines(),
@@ -117,6 +117,10 @@ class ReleasePackageTests(unittest.TestCase):
                     "THIRD_PARTY_NOTICES.md",
                     "agents/openai.yaml",
                     "canonical-renderer.lock",
+                    "docs/examples/strategy-board-before.png",
+                    "docs/examples/strategy-board-vtracer.png",
+                    "docs/examples/vintage-phone-before.png",
+                    "docs/examples/vintage-phone-vtracer.png",
                     "docs/provenance.md",
                     "docs/releases/v0.1.0.md",
                     "package-lock.json",
@@ -132,7 +136,7 @@ class ReleasePackageTests(unittest.TestCase):
                     "scripts/validate_schemas.py",
                     "scripts/validate_skill.py",
                     "src/reconstructing_raster_icons/pipeline.py",
-                    "tests/goldens/acceptance-model-1.0.0.json",
+                    "tests/goldens/acceptance-model-1.0.1.json",
                     "tests/test_release_package.py",
                     "tests/test_vtracer_workflow_contract.py",
                     "references/vtracer-workflow.md",

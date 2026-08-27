@@ -18,6 +18,10 @@ The implementation therefore:
   time, and memory where canonical isolation supports it;
 - verifies Node, package, loader, WASM, and runner identities against
   `canonical-renderer.lock`;
+- uses the Node `22.14.0` Permission Model for filesystem, child-process, and
+  worker restrictions without claiming a network permission that this runtime
+  does not implement; the pinned runner has no network import, initializes the
+  loader from already-read WASM bytes, and rejects external SVG resources;
 - fails closed as `non_canonical` if required isolation cannot be proven;
 - writes immutable stage artifacts and uses logical IDs plus SHA-256 evidence;
 - builds releases without symlinks or local paths and validates traversal-safe

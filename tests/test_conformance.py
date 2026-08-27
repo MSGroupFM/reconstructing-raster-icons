@@ -1,4 +1,4 @@
-"""Independent conformance and adversarial checks for acceptance model 1.0.0."""
+"""Independent conformance and adversarial checks for acceptance model 1.0.1."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from scipy.ndimage import binary_closing, binary_dilation, distance_transform_ed
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from reconstructing_raster_icons.constants import (
+    ACCEPTANCE_MODEL_VERSION,
     AUTOMATIC_GATE_IDS,
     SEMANTIC_GATE_IDS,
     ExitCode,
@@ -56,11 +57,11 @@ FIXTURES = REPOSITORY / "tests" / "fixtures"
 CONFORMANCE = FIXTURES / "conformance"
 CONTRACTS = FIXTURES / "contracts"
 SECURITY = FIXTURES / "security"
-GOLDEN = REPOSITORY / "tests" / "goldens" / "acceptance-model-1.0.0.json"
+GOLDEN = REPOSITORY / "tests" / "goldens" / "acceptance-model-1.0.1.json"
 FIXED_TIME = "2026-08-26T12:00:00Z"
 PINNED_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
 PINNED_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
-PINNED_RUNNER_SHA256 = "16011161fad6c9b585ce477aeff2d811abafbd767eee26612055259c610b8e5a"
+PINNED_RUNNER_SHA256 = "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c77835290d693ee16a"
 
 
 @dataclass(frozen=True)
@@ -590,7 +591,7 @@ def _normalized_bytes(report: dict[str, object]) -> bytes:
 def _golden() -> dict[str, object]:
     if not GOLDEN.is_file():
         raise AssertionError(
-            "missing independently checked golden: tests/goldens/acceptance-model-1.0.0.json"
+            "missing independently checked golden: tests/goldens/acceptance-model-1.0.1.json"
         )
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}
@@ -874,6 +875,9 @@ class FixtureGeneratorTests(unittest.TestCase):
 
 
 class IndependentMetricGoldenTests(unittest.TestCase):
+    def test_golden_revision_matches_acceptance_model(self) -> None:
+        self.assertEqual(_golden()["model_version"], ACCEPTANCE_MODEL_VERSION)
+
     def test_test_side_reference_formulas_and_production_match_six_decimal_goldens(self) -> None:
         manifest = _read_json(CONFORMANCE / "manifest.json")
         golden = _golden()
@@ -1247,6 +1251,14 @@ class CanonicalPlatformConformanceTests(unittest.TestCase):
                     second_evaluation = runs["run-b"]["evaluations"][iteration]
                     first_report = first_evaluation["report"]
                     second_report = second_evaluation["report"]
+                    self.assertTrue(
+                        first_report["canonical_environment"],
+                        first_report.get("warnings"),
+                    )
+                    self.assertTrue(
+                        second_report["canonical_environment"],
+                        second_report.get("warnings"),
+                    )
                     self.assertEqual(
                         _normalized_bytes(first_report),
                         _normalized_bytes(second_report),

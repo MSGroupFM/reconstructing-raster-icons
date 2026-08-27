@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: src
+
 jobs:
   python-matrix:
     name: Python ${{ matrix.python-version }}

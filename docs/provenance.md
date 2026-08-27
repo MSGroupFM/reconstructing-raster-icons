@@ -32,13 +32,34 @@ Disabling the WASM trap handler changes V8's virtual-address reservation mode;
 it does not create a total-memory boundary. External cgroup or platform
 confinement is optional defense in depth and is not acceptance provenance.
 
+## Fixture corpus portability
+
+Synthetic fixture corpus `1.0.1` and PNG sub-contract `1.0.0` separate two
+reproducibility claims. Two builds on the same host must produce every generated
+file with identical raw bytes. A generated corpus compared with the committed
+corpus on another supported host treats only PNG IDAT compression payloads and
+adjacent IDAT boundaries as non-authoritative. PNG signature, chunk integrity,
+IDAT contiguity and position, every ordered non-IDAT chunk, Pillow
+format/mode/bands, dimensions, frame count, metadata, and decoded RGBA bytes
+remain exact. The joined IDAT payload must be one bounded, complete zlib stream
+with no trailing bytes, unconsumed input, or second stream. Its decompressed
+length must exactly match the strict IHDR-derived filtered-scanline length,
+including Adam7 pass geometry; the filtered bytes themselves are not compared
+across platforms. A versioned
+`generated_files` inventory is authoritative: each generated tree's actual file
+set must equal it, and every declared path must exist in the committed subset.
+
+Draft `source_sha256` values remain relational evidence: each generated and
+committed tree independently verifies the field against its own raw sibling
+`source.png` before duplicate-rejecting, type-aware decoded JSON comparison.
+Only that one verified field is normalized. This cross-platform fixture rule
+does not relax release artifact reproducibility; two builds of the release ZIP
+must still be byte-identical.
+
 ## Publication status
 
-This provenance record accompanies a local release candidate whose publication
-readiness is blocked pending mandatory live Ubuntu x64 and macOS 15 arm64
-canonical zero-skip CI.
-Native local Darwin arm64 canonical execution passed all nine cases twice on
-2026-08-27. That host evidence is **VERIFIED**, but the post-push macOS CI record
-and Linux x64 GREEN remain **UNVERIFIED** and are both publication blockers.
-It does not assert that a GitHub repository, remote, tag, package, or release
-has been created or published.
+GitHub Actions at `cae7f72` is **VERIFIED** with successful canonical Linux x64
+and Darwin arm64 jobs. Corpus `1.0.1` and its portable fixture comparator are
+new unpushed working-tree changes, so publication readiness is again blocked
+until a post-push full CI run succeeds for the resulting commit. This record
+does not assert that a release tag, package, or public release has been created.

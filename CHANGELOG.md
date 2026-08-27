@@ -35,6 +35,17 @@ and this project uses semantic versioning.
   with alpha plus relative luminance and recolor explicit fill/stroke throughout
   component subtrees, so black occluders do not contaminate layout, topology,
   or mandatory-component gates.
+- Synthetic corpus `1.0.1` with PNG sub-contract `1.0.0` separates same-host
+  raw determinism from portable committed-fixture equivalence. Cross-platform
+  PNG comparison treats only IDAT deflate payloads and adjacent IDAT boundaries
+  as non-authoritative;
+  ordered non-IDAT chunks, Pillow properties, metadata, and decoded RGBA bytes
+  remain exact. Draft source hashes are verified against each tree's sibling
+  `source.png` before duplicate-rejecting, type-aware relational normalization.
+  The versioned generated-file inventory is exact, and IDAT must contain one
+  bounded complete zlib stream without trailing data whose decompressed length
+  exactly matches strict IHDR/Adam7 scanline geometry; filtered bytes are not
+  compared across platforms. Release ZIP byte determinism is unchanged.
 - GitHub Actions now exposes the repository's `src` layout explicitly instead
   of relying on test import order.
 - README now documents the complete workflow and includes real phone and
@@ -42,9 +53,9 @@ and this project uses semantic versioning.
 
 ## 0.1.0 — local release candidate prepared 2026-08-26
 
-This release candidate is prepared locally and has not been tagged, pushed,
-or published. Publication readiness is blocked pending the mandatory live
-Ubuntu x64 and macOS 15 arm64 canonical zero-skip CI runs.
+This release candidate has not been tagged or published. GitHub Actions at
+`cae7f72` passed canonical Linux x64 and Darwin arm64, but the new unpushed
+corpus `1.0.1` change requires a full post-push CI run before publication.
 
 ### Added
 
@@ -75,8 +86,7 @@ Ubuntu x64 and macOS 15 arm64 canonical zero-skip CI runs.
 - A clean Python `3.11.16` environment installed `requirements-lock.txt` with
   `--require-hashes`, and online host `npm ci --no-audit --no-fund` completed
   with the locked Node `22.14.0` and WASM artifacts verified.
-- Native local Darwin arm64 canonical execution is **VERIFIED** on 2026-08-27:
-  all nine cases passed twice with zero skips. The post-push macOS 15 arm64 CI
-  record remains **UNVERIFIED**, and Linux x64 GREEN remains **UNVERIFIED**.
-  Both live CI records are mandatory publication blockers and must provision
-  dependencies independently.
+- GitHub Actions at `cae7f72` is **VERIFIED** with successful canonical Linux
+  x64 and Darwin arm64 jobs. The unpushed corpus `1.0.1` comparator change is
+  absent from that evidence; its post-push full CI record remains **UNVERIFIED**
+  and blocks publication.

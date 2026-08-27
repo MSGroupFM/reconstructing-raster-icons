@@ -13,15 +13,17 @@ import os
 import platform
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
 from xml.etree import ElementTree
+import zlib
 
 import numpy as np
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from jsonschema import ValidationError
 from scipy.ndimage import binary_closing, binary_dilation, distance_transform_edt, label
 
@@ -62,6 +64,8 @@ FIXED_TIME = "2026-08-26T12:00:00Z"
 PINNED_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
 PINNED_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
 PINNED_RUNNER_SHA256 = "11b08e3fda461c2cc2bd7f03bbf6e0d21bcaf634e2d0ad0626cd71e0921b1af1"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_PNG_FILTERED_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,311 @@ class PixelOracleResult:
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _assert_generated_fixture_matches_committed(
+    generated: Path,
+    committed: Path,
+    relative: Path,
+) -> None:
+    if generated.suffix.lower() == ".png":
+        _assert_png_fixture_matches(generated, committed, relative)
+        return
+    generated_source = generated.with_name("source.png")
+    committed_source = committed.with_name("source.png")
+    if (
+        generated.name == "draft.json"
+        and generated_source.is_file()
+        and committed_source.is_file()
+    ):
+        generated_document = _verified_relational_draft(generated, generated_source, relative)
+        committed_document = _verified_relational_draft(committed, committed_source, relative)
+        generated_document["source_sha256"] = "<tree-source-sha256>"
+        committed_document["source_sha256"] = "<tree-source-sha256>"
+        if _canonical_json(generated_document) != _canonical_json(committed_document):
+            raise AssertionError(f"fixture mismatch at {relative}: decoded draft JSON differs")
+        return
+    if generated.read_bytes() != committed.read_bytes():
+        raise AssertionError(f"fixture mismatch at {relative}: raw bytes differ")
+
+
+def _verified_relational_draft(path: Path, source: Path, relative: Path) -> dict[str, object]:
+    document = _read_json_without_duplicates(path, relative)
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    if document.get("source_sha256") != expected:
+        raise AssertionError(
+            f"fixture mismatch at {relative}: source_sha256 does not match sibling source.png"
+        )
+    return document
+
+
+def _read_json_without_duplicates(path: Path, relative: Path) -> dict[str, object]:
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AssertionError(f"fixture mismatch at {relative}: duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise AssertionError(f"fixture mismatch at {relative}: invalid JSON") from error
+    if not isinstance(document, dict):
+        raise AssertionError(f"fixture mismatch at {relative}: draft JSON must be an object")
+    return document
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _expected_png_filtered_bytes(ihdr: bytes) -> int:
+    if len(ihdr) != 13:
+        raise AssertionError("PNG IHDR must contain exactly 13 bytes")
+    width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
+        ">IIBBBBB", ihdr
+    )
+    if width == 0 or height == 0 or width > 0x7FFFFFFF or height > 0x7FFFFFFF:
+        raise AssertionError("PNG IHDR dimensions are invalid")
+    legal_bit_depths = {
+        0: {1, 2, 4, 8, 16},
+        2: {8, 16},
+        3: {1, 2, 4, 8},
+        4: {8, 16},
+        6: {8, 16},
+    }
+    if color_type not in legal_bit_depths or bit_depth not in legal_bit_depths[color_type]:
+        raise AssertionError("PNG IHDR color type and bit depth are incompatible")
+    if compression != 0 or filtering != 0 or interlace not in {0, 1}:
+        raise AssertionError("PNG IHDR compression, filter, or interlace method is invalid")
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
+    bits_per_pixel = channels * bit_depth
+
+    def pass_bytes(
+        column_start: int,
+        row_start: int,
+        column_step: int,
+        row_step: int,
+    ) -> int:
+        pass_width = (
+            0
+            if width <= column_start
+            else (width - column_start + column_step - 1) // column_step
+        )
+        pass_height = (
+            0
+            if height <= row_start
+            else (height - row_start + row_step - 1) // row_step
+        )
+        if pass_width == 0 or pass_height == 0:
+            return 0
+        scanline_bytes = (pass_width * bits_per_pixel + 7) // 8
+        return pass_height * (1 + scanline_bytes)
+
+    if interlace == 0:
+        expected = pass_bytes(0, 0, 1, 1)
+    else:
+        expected = sum(
+            pass_bytes(*adam7_pass)
+            for adam7_pass in (
+                (0, 0, 8, 8),
+                (4, 0, 8, 8),
+                (0, 4, 4, 8),
+                (2, 0, 4, 4),
+                (0, 2, 2, 4),
+                (1, 0, 2, 2),
+                (0, 1, 1, 2),
+            )
+        )
+    if expected > MAX_PNG_FILTERED_BYTES:
+        raise AssertionError("PNG filtered scanlines exceed decompression bound")
+    return expected
+
+
+def _validate_png_idat_stream(payload: bytes, expected_filtered_bytes: int) -> None:
+    decompressor = zlib.decompressobj()
+    try:
+        filtered = decompressor.decompress(payload, expected_filtered_bytes + 1)
+        if len(filtered) > expected_filtered_bytes or decompressor.unconsumed_tail:
+            raise AssertionError("PNG filtered scanline length does not match IHDR")
+        filtered += decompressor.flush(expected_filtered_bytes + 1 - len(filtered))
+    except zlib.error as error:
+        raise AssertionError("PNG IDAT zlib stream is corrupt") from error
+    if len(filtered) > expected_filtered_bytes or decompressor.unconsumed_tail:
+        raise AssertionError("PNG filtered scanline length does not match IHDR")
+    if not decompressor.eof:
+        raise AssertionError("PNG IDAT zlib stream is incomplete")
+    if decompressor.unused_data:
+        raise AssertionError("PNG IDAT zlib stream has trailing data or multiple streams")
+    if len(filtered) != expected_filtered_bytes:
+        raise AssertionError("PNG filtered scanline length does not match IHDR")
+
+
+def _png_normalized_chunks(path: Path) -> tuple[tuple[bytes, bytes], ...]:
+    payload = path.read_bytes()
+    if not payload.startswith(PNG_SIGNATURE):
+        raise AssertionError("invalid PNG signature")
+    offset = len(PNG_SIGNATURE)
+    chunks: list[tuple[bytes, bytes]] = []
+    idat_payloads: list[bytes] = []
+    ihdr: bytes | None = None
+    saw_idat = False
+    closed_idat = False
+    while offset < len(payload):
+        if len(payload) - offset < 12:
+            raise AssertionError("truncated PNG chunk")
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        chunk_type = payload[offset + 4 : offset + 8]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(payload):
+            raise AssertionError("PNG chunk exceeds payload bounds")
+        chunk_data = payload[offset + 8 : offset + 8 + length]
+        expected_crc = struct.unpack(">I", payload[offset + 8 + length : chunk_end])[0]
+        if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != expected_crc:
+            raise AssertionError("PNG chunk CRC mismatch")
+        if not chunks and not saw_idat and chunk_type != b"IHDR":
+            raise AssertionError("PNG does not begin with IHDR")
+        if chunk_type == b"IHDR":
+            if ihdr is not None:
+                raise AssertionError("PNG contains multiple IHDR chunks")
+            ihdr = chunk_data
+        if chunk_type == b"IDAT":
+            if closed_idat:
+                raise AssertionError("PNG IDAT chunks are not contiguous")
+            if not saw_idat:
+                chunks.append((b"IDAT", b"<normalized-payload>"))
+            idat_payloads.append(chunk_data)
+            saw_idat = True
+        else:
+            if saw_idat:
+                closed_idat = True
+            chunks.append((chunk_type, chunk_data))
+        offset = chunk_end
+    if not saw_idat:
+        raise AssertionError("PNG has no IDAT chunk")
+    if ihdr is None:
+        raise AssertionError("PNG has no IHDR chunk")
+    _validate_png_idat_stream(
+        b"".join(idat_payloads),
+        _expected_png_filtered_bytes(ihdr),
+    )
+    return tuple(chunks)
+
+
+def _png_pillow_contract(path: Path, relative: Path, stage: str) -> dict[str, object]:
+    try:
+        with Image.open(path) as image:
+            image.load()
+            rgba_bytes = image.convert("RGBA").tobytes()
+            return {
+                "format": image.format,
+                "mode": image.mode,
+                "bands": image.getbands(),
+                "size": image.size,
+                "n_frames": getattr(image, "n_frames", 1),
+                "info": copy.deepcopy(image.info),
+                "decoded_rgba": rgba_bytes,
+                "decoded_rgba_sha256": hashlib.sha256(rgba_bytes).hexdigest(),
+            }
+    except (Image.DecompressionBombError, OSError, SyntaxError, ValueError) as error:
+        raise AssertionError(
+            f"fixture mismatch at {relative}: PNG {stage} Pillow decode failed: {error}"
+        ) from error
+
+
+def _assert_png_fixture_matches(generated: Path, committed: Path, relative: Path) -> None:
+    try:
+        generated_chunks = _png_normalized_chunks(generated)
+        committed_chunks = _png_normalized_chunks(committed)
+    except AssertionError as error:
+        raise AssertionError(f"fixture mismatch at {relative}: {error}") from error
+    if generated_chunks != committed_chunks:
+        raise AssertionError(
+            f"fixture mismatch at {relative}: normalized IDAT position or "
+            "ordered non-IDAT chunks differ"
+        )
+    generated_contract = _png_pillow_contract(generated, relative, "generated")
+    committed_contract = _png_pillow_contract(committed, relative, "committed")
+    for field in (
+        "format", "mode", "bands", "size", "n_frames", "info",
+        "decoded_rgba", "decoded_rgba_sha256",
+    ):
+        if generated_contract[field] != committed_contract[field]:
+            raise AssertionError(f"fixture mismatch at {relative}: PNG {field} differs")
+
+
+def _assert_raw_fixture_trees_equal(first: Path, second: Path) -> None:
+    first_files = {path.relative_to(first) for path in first.rglob("*") if path.is_file()}
+    second_files = {path.relative_to(second) for path in second.rglob("*") if path.is_file()}
+    if first_files != second_files:
+        relative = min(first_files ^ second_files)
+        raise AssertionError(f"same-host fixture trees first differ at {relative}: file presence")
+    for relative in sorted(first_files):
+        if (first / relative).read_bytes() != (second / relative).read_bytes():
+            raise AssertionError(f"same-host fixture trees first differ at {relative}: raw bytes")
+
+
+def _declared_generated_inventory(root: Path) -> tuple[Path, ...]:
+    manifest = _read_json_without_duplicates(
+        root / "conformance" / "manifest.json",
+        Path("conformance/manifest.json"),
+    )
+    inventory = manifest.get("generated_files")
+    if not isinstance(inventory, dict) or set(inventory) != {"version", "paths"}:
+        raise AssertionError("generated_files inventory shape is invalid")
+    if inventory["version"] != "1.0.0" or not isinstance(inventory["paths"], list):
+        raise AssertionError("generated_files inventory version or paths are invalid")
+    raw_paths = inventory["paths"]
+    if any(not isinstance(value, str) for value in raw_paths):
+        raise AssertionError("generated_files inventory paths must be strings")
+    if raw_paths != sorted(set(raw_paths)):
+        raise AssertionError("generated_files inventory paths must be sorted and unique")
+    declared = tuple(Path(value) for value in raw_paths)
+    if any(
+        path.is_absolute()
+        or ".." in path.parts
+        or path.as_posix() != raw
+        for path, raw in zip(declared, raw_paths, strict=True)
+    ):
+        raise AssertionError("generated_files inventory contains an unsafe path")
+    return declared
+
+
+def _assert_generated_inventory(root: Path) -> tuple[Path, ...]:
+    declared = _declared_generated_inventory(root)
+    declared_set = set(declared)
+    actual = {path.relative_to(root) for path in root.rglob("*") if path.is_file()}
+    if actual != declared_set:
+        relative = min(actual ^ declared_set)
+        detail = "undeclared generated file" if relative in actual else "declared file is missing"
+        raise AssertionError(f"generated inventory mismatch at {relative}: {detail}")
+    return declared
+
+
+COMMITTED_GENERATED_FILES = _declared_generated_inventory(FIXTURES)
+
+
+def _replace_first_idat_payload(payload: bytes, replacement: bytes) -> bytes:
+    idat_type_offset = payload.index(b"IDAT")
+    chunk_offset = idat_type_offset - 4
+    idat_length = struct.unpack(">I", payload[chunk_offset:idat_type_offset])[0]
+    chunk_end = idat_type_offset + 8 + idat_length
+    crc = zlib.crc32(b"IDAT" + replacement) & 0xFFFFFFFF
+    chunk = (
+        struct.pack(">I", len(replacement))
+        + b"IDAT"
+        + replacement
+        + struct.pack(">I", crc)
+    )
+    return payload[:chunk_offset] + chunk + payload[chunk_end:]
 
 
 def _mask(path: Path) -> np.ndarray:
@@ -836,27 +1145,372 @@ def _canonical_report_artifact_paths(
 
 
 class FixtureGeneratorTests(unittest.TestCase):
-    def test_generator_is_reproducible_and_preserves_task3_baseline_targets(self) -> None:
+    def test_cross_platform_png_contract_accepts_equivalent_reencoding(self) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        with tempfile.TemporaryDirectory() as directory:
+            generated = Path(directory) / committed.name
+            with Image.open(committed) as image:
+                image.save(generated, format="PNG", optimize=False, compress_level=0)
+
+            self.assertNotEqual(generated.read_bytes(), committed.read_bytes())
+            _assert_generated_fixture_matches_committed(
+                generated,
+                committed,
+                Path("conformance/metrics/organic-cleaned-candidate.png"),
+            )
+
+    def test_cross_platform_png_contract_rejects_pixel_mutation(self) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        with tempfile.TemporaryDirectory() as directory:
+            generated = Path(directory) / committed.name
+            with Image.open(committed) as image:
+                mutated = image.copy()
+                original = mutated.getpixel((0, 0))
+                mutated.putpixel((0, 0), 0 if original != 0 else 255)
+                mutated.save(generated, format="PNG", optimize=False, compress_level=0)
+            with self.assertRaisesRegex(AssertionError, "decoded_rgba"):
+                _assert_generated_fixture_matches_committed(
+                    generated,
+                    committed,
+                    Path("conformance/metrics/organic-cleaned-candidate.png"),
+                )
+
+    def test_cross_platform_png_contract_rejects_added_text_metadata(self) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        with tempfile.TemporaryDirectory() as directory:
+            generated = Path(directory) / committed.name
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("Comment", "not canonical fixture metadata")
+            with Image.open(committed) as image:
+                image.save(
+                    generated,
+                    format="PNG",
+                    optimize=False,
+                    compress_level=0,
+                    pnginfo=metadata,
+                )
+            with self.assertRaisesRegex(AssertionError, "ordered non-IDAT chunks differ"):
+                _assert_generated_fixture_matches_committed(
+                    generated,
+                    committed,
+                    Path("conformance/metrics/organic-cleaned-candidate.png"),
+                )
+
+    def test_cross_platform_png_contract_rejects_bad_crc_and_noncontiguous_idat(
+        self,
+    ) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        payload = committed.read_bytes()
+        idat_type_offset = payload.index(b"IDAT")
+        chunk_offset = idat_type_offset - 4
+        idat_length = struct.unpack(">I", payload[chunk_offset:idat_type_offset])[0]
+        idat_data = payload[idat_type_offset + 4 : idat_type_offset + 4 + idat_length]
+        crc_offset = idat_type_offset + 4 + idat_length
+        chunk_end = crc_offset + 4
+
+        def png_chunk(chunk_type: bytes, chunk_data: bytes) -> bytes:
+            crc = zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF
+            return (
+                struct.pack(">I", len(chunk_data))
+                + chunk_type
+                + chunk_data
+                + struct.pack(">I", crc)
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            bad_crc = bytearray(payload)
+            bad_crc[crc_offset] ^= 0x01
+            bad_crc_path = Path(directory) / "bad-crc.png"
+            bad_crc_path.write_bytes(bad_crc)
+            with self.assertRaisesRegex(AssertionError, "CRC mismatch"):
+                _assert_generated_fixture_matches_committed(
+                    bad_crc_path,
+                    committed,
+                    Path("conformance/metrics/organic-cleaned-candidate.png"),
+                )
+
+            split = len(idat_data) // 2
+            separated_idat = (
+                png_chunk(b"IDAT", idat_data[:split])
+                + png_chunk(b"tEXt", b"gap\x00between-idat")
+                + png_chunk(b"IDAT", idat_data[split:])
+            )
+            noncontiguous_path = Path(directory) / "noncontiguous-idat.png"
+            noncontiguous_path.write_bytes(
+                payload[:chunk_offset] + separated_idat + payload[chunk_end:]
+            )
+            with self.assertRaisesRegex(AssertionError, "IDAT chunks are not contiguous"):
+                _assert_generated_fixture_matches_committed(
+                    noncontiguous_path,
+                    committed,
+                    Path("conformance/metrics/organic-cleaned-candidate.png"),
+                )
+
+    def test_cross_platform_png_contract_rejects_trailing_idat_data(self) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        payload = committed.read_bytes()
+        idat_type_offset = payload.index(b"IDAT")
+        idat_length = struct.unpack(">I", payload[idat_type_offset - 4:idat_type_offset])[0]
+        idat_data = payload[idat_type_offset + 4 : idat_type_offset + 4 + idat_length]
+        with tempfile.TemporaryDirectory() as directory:
+            generated = Path(directory) / committed.name
+            generated.write_bytes(
+                _replace_first_idat_payload(payload, idat_data + b"SECRET-IDAT-TRAILER")
+            )
+            with self.assertRaisesRegex(AssertionError, "trailing data"):
+                _assert_generated_fixture_matches_committed(
+                    generated,
+                    committed,
+                    Path("conformance/metrics/organic-cleaned-candidate.png"),
+                )
+
+    def test_cross_platform_png_contract_rejects_invalid_zlib_stream_shapes(self) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        payload = committed.read_bytes()
+        idat_type_offset = payload.index(b"IDAT")
+        idat_length = struct.unpack(">I", payload[idat_type_offset - 4:idat_type_offset])[0]
+        idat_data = payload[idat_type_offset + 4 : idat_type_offset + 4 + idat_length]
+        variants = (
+            ("corrupt", bytes([idat_data[0] ^ 0x01]) + idat_data[1:], "corrupt"),
+            ("incomplete", idat_data[:-1], "incomplete"),
+            ("multiple", idat_data + zlib.compress(b"second-stream"), "multiple streams"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for name, replacement, diagnostic in variants:
+                with self.subTest(name=name):
+                    generated = Path(directory) / f"{name}.png"
+                    generated.write_bytes(_replace_first_idat_payload(payload, replacement))
+                    with self.assertRaisesRegex(AssertionError, diagnostic):
+                        _assert_generated_fixture_matches_committed(
+                            generated,
+                            committed,
+                            Path("conformance/metrics/organic-cleaned-candidate.png"),
+                        )
+
+    def test_cross_platform_png_contract_rejects_extra_filtered_scanline_bytes(self) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        payload = committed.read_bytes()
+        idat_type_offset = payload.index(b"IDAT")
+        idat_length = struct.unpack(">I", payload[idat_type_offset - 4:idat_type_offset])[0]
+        idat_data = payload[idat_type_offset + 4 : idat_type_offset + 4 + idat_length]
+        original_filtered = zlib.decompress(idat_data)
+        with tempfile.TemporaryDirectory() as directory:
+            generated = Path(directory) / committed.name
+            generated.write_bytes(
+                _replace_first_idat_payload(
+                    payload,
+                    zlib.compress(original_filtered + b"EXTRA"),
+                )
+            )
+            with self.assertRaisesRegex(AssertionError, "filtered scanline length"):
+                _assert_generated_fixture_matches_committed(
+                    generated,
+                    committed,
+                    Path("conformance/metrics/organic-cleaned-candidate.png"),
+                )
+
+    def test_png_filtered_length_validates_ihdr_and_adam7_geometry(self) -> None:
+        def ihdr(
+            width: int,
+            height: int,
+            bit_depth: int,
+            color_type: int,
+            compression: int = 0,
+            filtering: int = 0,
+            interlace: int = 0,
+        ) -> bytes:
+            return struct.pack(
+                ">IIBBBBB",
+                width,
+                height,
+                bit_depth,
+                color_type,
+                compression,
+                filtering,
+                interlace,
+            )
+
+        self.assertEqual(_expected_png_filtered_bytes(ihdr(8, 8, 1, 0)), 16)
+        self.assertEqual(_expected_png_filtered_bytes(ihdr(8, 8, 1, 0, interlace=1)), 30)
+        self.assertEqual(_expected_png_filtered_bytes(ihdr(8, 8, 8, 6, interlace=1)), 271)
+
+        invalid_headers = (
+            b"short",
+            ihdr(0, 8, 8, 6),
+            ihdr(8, 8, 16, 3),
+            ihdr(8, 8, 8, 1),
+            ihdr(8, 8, 8, 6, compression=1),
+            ihdr(8, 8, 8, 6, filtering=1),
+            ihdr(8, 8, 8, 6, interlace=2),
+        )
+        for invalid_header in invalid_headers:
+            with self.subTest(ihdr=invalid_header):
+                with self.assertRaisesRegex(AssertionError, "PNG IHDR"):
+                    _expected_png_filtered_bytes(invalid_header)
+
+    def test_cross_platform_png_contract_wraps_pillow_decode_errors(self) -> None:
+        committed = CONFORMANCE / "metrics" / "organic-cleaned-candidate.png"
+        payload = committed.read_bytes()
+        idat_type_offset = payload.index(b"IDAT")
+        idat_length = struct.unpack(">I", payload[idat_type_offset - 4:idat_type_offset])[0]
+        idat_data = payload[idat_type_offset + 4 : idat_type_offset + 4 + idat_length]
+        invalid_filtered = bytearray(zlib.decompress(idat_data))
+        invalid_filtered[0] = 5
+        with tempfile.TemporaryDirectory() as directory:
+            generated = Path(directory) / committed.name
+            generated.write_bytes(
+                _replace_first_idat_payload(payload, zlib.compress(invalid_filtered))
+            )
+            with self.assertRaisesRegex(
+                AssertionError,
+                "conformance/metrics/organic-cleaned-candidate.png: PNG generated Pillow decode",
+            ):
+                _assert_generated_fixture_matches_committed(
+                    generated,
+                    committed,
+                    Path("conformance/metrics/organic-cleaned-candidate.png"),
+                )
+
+    def test_cross_platform_draft_contract_normalizes_only_verified_source_hash(
+        self,
+    ) -> None:
+        committed_case = CONFORMANCE / "analytic-fill"
+        with tempfile.TemporaryDirectory() as directory:
+            generated_case = Path(directory) / "analytic-fill"
+            generated_case.mkdir()
+            generated_source = generated_case / "source.png"
+            with Image.open(committed_case / "source.png") as image:
+                image.save(generated_source, format="PNG", optimize=False, compress_level=0)
+            generated_draft = _read_json(committed_case / "draft.json")
+            generated_draft["source_sha256"] = hashlib.sha256(
+                generated_source.read_bytes()
+            ).hexdigest()
+            generated_draft_path = generated_case / "draft.json"
+            generated_draft_path.write_text(
+                json.dumps(generated_draft, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertNotEqual(
+                generated_draft_path.read_bytes(),
+                (committed_case / "draft.json").read_bytes(),
+            )
+            _assert_generated_fixture_matches_committed(
+                generated_draft_path,
+                committed_case / "draft.json",
+                Path("conformance/analytic-fill/draft.json"),
+            )
+
+            generated_draft["accuracy_confirmed"] = 1
+            generated_draft_path.write_text(json.dumps(generated_draft), encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "decoded draft JSON differs"):
+                _assert_generated_fixture_matches_committed(
+                    generated_draft_path,
+                    committed_case / "draft.json",
+                    Path("conformance/analytic-fill/draft.json"),
+                )
+
+            generated_draft["accuracy_confirmed"] = True
+            generated_draft["source_sha256"] = "0" * 64
+            generated_draft_path.write_text(json.dumps(generated_draft), encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "source_sha256"):
+                _assert_generated_fixture_matches_committed(
+                    generated_draft_path,
+                    committed_case / "draft.json",
+                    Path("conformance/analytic-fill/draft.json"),
+                )
+
+    def test_cross_platform_draft_contract_rejects_duplicate_json_keys(self) -> None:
+        committed_case = CONFORMANCE / "analytic-fill"
+        with tempfile.TemporaryDirectory() as directory:
+            generated_case = Path(directory) / "analytic-fill"
+            generated_case.mkdir()
+            shutil.copyfile(committed_case / "source.png", generated_case / "source.png")
+            generated_draft = (committed_case / "draft.json").read_text(encoding="utf-8")
+            generated_draft = generated_draft.replace(
+                '  "accuracy_confirmed": true,',
+                '  "accuracy_confirmed": true,\n  "accuracy_confirmed": true,',
+                1,
+            )
+            generated_draft_path = generated_case / "draft.json"
+            generated_draft_path.write_text(generated_draft, encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "duplicate JSON key"):
+                _assert_generated_fixture_matches_committed(
+                    generated_draft_path,
+                    committed_case / "draft.json",
+                    Path("conformance/analytic-fill/draft.json"),
+                )
+
+    def test_generator_is_raw_byte_deterministic_on_same_host_for_full_corpus(
+        self,
+    ) -> None:
         script = FIXTURES / "build_fixtures.py"
-        with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
+        with (
+            tempfile.TemporaryDirectory() as first_directory,
+            tempfile.TemporaryDirectory() as second_directory,
+        ):
             first = Path(first_directory)
             second = Path(second_directory)
             subprocess.run([sys.executable, str(script), "--root", str(first)], check=True)
             subprocess.run([sys.executable, str(script), "--root", str(second)], check=True)
-            first_files = {path.relative_to(first) for path in first.rglob("*") if path.is_file()}
-            second_files = {path.relative_to(second) for path in second.rglob("*") if path.is_file()}
+            first_inventory = _assert_generated_inventory(first)
+            second_inventory = _assert_generated_inventory(second)
+            self.assertEqual(first_inventory, COMMITTED_GENERATED_FILES)
+            self.assertEqual(second_inventory, COMMITTED_GENERATED_FILES)
+            _assert_raw_fixture_trees_equal(first, second)
 
-            self.assertEqual(first_files, second_files)
-            self.assertNotIn(Path("contracts/valid-draft.json"), first_files)
-            self.assertNotIn(Path("contracts/valid-map.json"), first_files)
-            self.assertNotIn(Path("security/doctype.svg"), first_files)
-            self.assertNotIn(Path("security/external-image.svg"), first_files)
-            for relative in sorted(first_files):
-                self.assertEqual((first / relative).read_bytes(), (second / relative).read_bytes())
-                self.assertEqual((first / relative).read_bytes(), (FIXTURES / relative).read_bytes())
+    def test_generated_corpus_matches_committed_cross_platform_contract(self) -> None:
+        script = FIXTURES / "build_fixtures.py"
+        with tempfile.TemporaryDirectory() as directory:
+            generated_root = Path(directory)
+            subprocess.run([sys.executable, str(script), "--root", str(generated_root)], check=True)
+            generated_inventory = _assert_generated_inventory(generated_root)
+            self.assertEqual(generated_inventory, COMMITTED_GENERATED_FILES)
+            generated_files = set(generated_inventory)
+            self.assertNotIn(Path("contracts/valid-draft.json"), generated_files)
+            self.assertNotIn(Path("contracts/valid-map.json"), generated_files)
+            self.assertNotIn(Path("security/doctype.svg"), generated_files)
+            self.assertNotIn(Path("security/external-image.svg"), generated_files)
+            for relative in sorted(generated_files):
+                committed = FIXTURES / relative
+                if not committed.is_file():
+                    self.fail(f"fixture mismatch at {relative}: committed file is missing")
+                _assert_generated_fixture_matches_committed(
+                    generated_root / relative,
+                    committed,
+                    relative,
+                )
+
+    def test_generated_inventory_rejects_omitted_declared_file(self) -> None:
+        script = FIXTURES / "build_fixtures.py"
+        with tempfile.TemporaryDirectory() as directory:
+            generated_root = Path(directory)
+            subprocess.run([sys.executable, str(script), "--root", str(generated_root)], check=True)
+            omitted = Path("conformance/analytic-fill/candidate.svg")
+            (generated_root / omitted).unlink()
+            with self.assertRaisesRegex(
+                AssertionError,
+                rf"generated inventory mismatch at {omitted}: declared file is missing",
+            ):
+                _assert_generated_inventory(generated_root)
 
     def test_manifest_declares_every_required_synthetic_fixture_class(self) -> None:
         manifest = _read_json(CONFORMANCE / "manifest.json")
+        self.assertEqual(manifest["corpus_version"], "1.0.1")
+        self.assertEqual(manifest["generated_files"]["version"], "1.0.0")
+        self.assertIn("conformance/manifest.json", manifest["generated_files"]["paths"])
+        self.assertEqual(
+            manifest["png_fixture_contract"],
+            {
+                "version": "1.0.0",
+                "idat_encoding": "non-authoritative",
+                "non_idat_chunks": "ordered-exact",
+                "decoded_rgba": "byte-exact",
+                "pillow_properties": [
+                    "format", "mode", "bands", "size", "n_frames", "info",
+                ],
+            },
+        )
         self.assertEqual(manifest["provenance"], "synthetic-original")
         self.assertEqual(
             manifest["renderer_mode"],

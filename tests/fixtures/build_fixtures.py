@@ -195,8 +195,10 @@ def _draft(
         ],
         "refinement_limit": 8,
     }
-    if source_color_scope is not None:
-        draft["source_color_scope"] = source_color_scope
+    draft["source_color_scope"] = source_color_scope or {
+        "classification": "monochrome",
+        "merge_to_monochrome": None,
+    }
     return draft
 
 
@@ -206,7 +208,7 @@ def _write_case(
     *,
     source_luma: np.ndarray,
     reference_components: dict[str, np.ndarray],
-    svg: str,
+    svg: str | None,
     components: list[dict[str, object]],
     ratio: str = "1:1",
     view_box: tuple[int, int] = (64, 64),
@@ -222,7 +224,8 @@ def _write_case(
     _png(source, source_luma)
     for component_id, mask in reference_components.items():
         _png(case / "masks" / f"{component_id}.png", _luma(mask))
-    (case / "candidate.svg").write_text(svg + "\n", encoding="utf-8")
+    if svg is not None:
+        (case / "candidate.svg").write_text(svg + "\n", encoding="utf-8")
     height, width = source_luma.shape[:2]
     draft = _draft(
         source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -382,21 +385,18 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
         )
     )
 
+    black_mark = _rect(square, (256, 256, 512, 768))
+    red_mark = _rect(square, (512, 256, 768, 768))
     multicolor_source = np.full((1024, 1024, 4), 255, dtype=np.uint8)
-    multicolor_source[rectangle, 0] = 255
-    multicolor_source[rectangle, 1] = 0
-    multicolor_source[rectangle, 2] = 0
+    multicolor_source[black_mark, :3] = (0, 0, 0)
+    multicolor_source[red_mark, :3] = (255, 0, 0)
     _write_case(
         root,
         "multicolor-rejection",
             source_luma=multicolor_source,
-            reference_components={"mark": rectangle},
-            svg=(
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
-                '<g id="mark"><rect x="16" y="16" width="16" height="32" fill="#000000"/>'
-                '<rect x="32" y="16" width="16" height="32" fill="#ff0000"/></g></svg>'
-            ),
-            components=[_component("mark", geometry="mixed")],
+            reference_components={"black-mark": black_mark, "red-mark": red_mark},
+            svg=None,
+            components=[_component("black-mark"), _component("red-mark")],
             source_color_scope={
                 "classification": "meaningful_multicolor",
                 "merge_to_monochrome": None,

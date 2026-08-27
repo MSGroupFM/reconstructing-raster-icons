@@ -8,8 +8,10 @@ semantic gates.
 
 Version `0.1.0` is prepared for monochrome icons only: one opaque foreground
 color on a transparent background. Meaningful multicolor, gradients,
-intentional translucency, photographs, and painterly images stop for an
-explicit scope decision instead of being silently flattened.
+intentional translucency, photographs, and painterly images require a declared
+analysis/user scope decision and stop for its required confirmation instead of
+being silently flattened. The deterministic CLI enforces the declaration; it
+does not claim automatic semantic color detection.
 
 ## Requirements
 

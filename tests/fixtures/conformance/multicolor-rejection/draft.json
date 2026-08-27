@@ -18,13 +18,27 @@
         "auto.components.present",
         "semantic.components.complete"
       ],
-      "component_id": "mark",
+      "component_id": "black-mark",
       "expected_hole_count": 0,
-      "geometry": "mixed",
+      "geometry": "polygon",
       "mandatory": true,
       "paint_type": "fill",
-      "source_mask_path": "masks/mark.png",
-      "svg_id": "mark",
+      "source_mask_path": "masks/black-mark.png",
+      "svg_id": "black-mark",
+      "weight": 1.0
+    },
+    {
+      "applicable_gates": [
+        "auto.components.present",
+        "semantic.components.complete"
+      ],
+      "component_id": "red-mark",
+      "expected_hole_count": 0,
+      "geometry": "polygon",
+      "mandatory": true,
+      "paint_type": "fill",
+      "source_mask_path": "masks/red-mark.png",
+      "svg_id": "red-mark",
       "weight": 1.0
     }
   ],
@@ -65,7 +79,7 @@
     "classification": "meaningful_multicolor",
     "merge_to_monochrome": null
   },
-  "source_sha256": "890e3b05b07b14ceeedfd19553258cdcaf8bacc60ff57e81729016c14a1cf372",
+  "source_sha256": "21a53d267d805c1ad962e44cec76a75fead7099665e2f949faa49af850daeeeb",
   "target_sizes": [
     128,
     64,

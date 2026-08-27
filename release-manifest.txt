@@ -71,9 +71,9 @@ tests/fixtures/conformance/missing-component/draft.json
 tests/fixtures/conformance/missing-component/masks/dot.png
 tests/fixtures/conformance/missing-component/masks/mark.png
 tests/fixtures/conformance/missing-component/source.png
-tests/fixtures/conformance/multicolor-rejection/candidate.svg
 tests/fixtures/conformance/multicolor-rejection/draft.json
-tests/fixtures/conformance/multicolor-rejection/masks/mark.png
+tests/fixtures/conformance/multicolor-rejection/masks/black-mark.png
+tests/fixtures/conformance/multicolor-rejection/masks/red-mark.png
 tests/fixtures/conformance/multicolor-rejection/source.png
 tests/fixtures/conformance/noisy-antialias/candidate.svg
 tests/fixtures/conformance/noisy-antialias/draft.json

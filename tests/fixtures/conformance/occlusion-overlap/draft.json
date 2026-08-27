@@ -80,6 +80,10 @@
   "schema_kind": "reconstruction-map-draft",
   "schema_version": "1.0.0",
   "semantic_facts": [],
+  "source_color_scope": {
+    "classification": "monochrome",
+    "merge_to_monochrome": null
+  },
   "source_sha256": "b799f5c97de0f2ac4a14aa011143fcef3a021691c49a9e6436b0efe4dcad07fb",
   "target_sizes": [
     128,

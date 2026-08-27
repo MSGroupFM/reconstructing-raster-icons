@@ -101,6 +101,23 @@ class PrepareReferenceTests(unittest.TestCase):
             with self.assertRaisesRegex(InvalidInputError, "automatic normalization estimator"):
                 prepare_reference(source, draft_path, root / "reference")
 
+    def test_clear_source_rejects_explicit_normalization_override_before_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            draft["normalization"]["estimator_basis"] = "explicit_override"
+            draft["normalization"]["explicit_overrides"] = {
+                "background_luminance": 1,
+                "foreground_luminance": 0,
+                "reason": "caller override",
+                "confirmed": True,
+                "confirmed_at": "2026-08-26T00:00:00Z",
+            }
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            with self.assertRaisesRegex(InvalidInputError, "only allowed when the automatic estimate is ambiguous"):
+                prepare_reference(source, draft_path, root / "reference")
+
     def test_explicit_normalization_override_requires_structured_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -123,7 +140,7 @@ class PrepareReferenceTests(unittest.TestCase):
             }
             draft_path.write_text(json.dumps(draft), encoding="utf-8")
 
-            with self.assertRaisesRegex(InvalidInputError, "explicit normalization override"):
+            with self.assertRaises((ValidationError, InvalidInputError)):
                 prepare_reference(source, draft_path, root / "reference")
 
             draft["normalization"]["explicit_overrides"].update({
@@ -1462,12 +1479,18 @@ class FinalizeReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, draft_path = write_reference_inputs(root)
+            pixels = np.full((64, 64), 153, dtype=np.uint8)
+            pixels[16:48, 16:48] = 102
+            encoded = BytesIO()
+            Image.fromarray(pixels, mode="L").save(encoded, format="PNG")
+            source.write_bytes(encoded.getvalue())
             draft = json.loads(draft_path.read_text())
+            draft["source_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
             draft["normalization"]["estimator_basis"] = "explicit_override"
             draft["normalization"]["explicit_overrides"] = {
-                "background_luminance": 1,
-                "foreground_luminance": 0,
-                "reason": "confirmed transparent-black foreground",
+                "background_luminance": 0.32,
+                "foreground_luminance": 0.13,
+                "reason": "confirmed ambiguous low-contrast foreground",
                 "confirmed": True,
                 "confirmed_at": "2026-08-26T00:00:00Z",
             }
@@ -1498,7 +1521,7 @@ class FinalizeReviewTests(unittest.TestCase):
             self.assertEqual(normalization["estimator_basis"], "explicit_override")
             self.assertEqual(
                 normalization["explicit_overrides"]["reason"],
-                "confirmed transparent-black foreground",
+                "confirmed ambiguous low-contrast foreground",
             )
 
     def test_semantic_review_validation_and_merge_use_one_snapshot(self) -> None:

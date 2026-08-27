@@ -1136,6 +1136,10 @@ class PipelineCorpusTests(unittest.TestCase):
 
     def test_meaningful_multicolor_source_stops_before_freeze(self) -> None:
         case = CONFORMANCE / "multicolor-rejection"
+        with Image.open(case / "source.png") as source:
+            colors = {tuple(color) for count, color in source.convert("RGB").getcolors(2_000_000) or [] if count}
+        self.assertIn((0, 0, 0), colors)
+        self.assertIn((255, 0, 0), colors)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(InvalidInputError, "merge-to-monochrome"):
                 prepare_reference(case / "source.png", case / "draft.json", Path(directory) / "reference")

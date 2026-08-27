@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,51 @@ class PipelineCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(json.loads(result.stdout)["status"], "invalid_input")
         self.assertIn("merge-to-monochrome", result.stderr)
+
+    def test_clear_source_rejects_explicit_normalization_override(self) -> None:
+        case = REPOSITORY / "tests" / "fixtures" / "conformance" / "analytic-fill"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            draft = json.loads((case / "draft.json").read_text(encoding="utf-8"))
+            shutil.copyfile(case / "masks" / "mark.png", root / "mark.png")
+            draft["components"][0]["source_mask_path"] = "mark.png"
+            draft["source_color_scope"] = {
+                "classification": "monochrome", "merge_to_monochrome": None,
+            }
+            draft["normalization"]["estimator_basis"] = "explicit_override"
+            draft["normalization"]["explicit_overrides"] = {
+                "background_luminance": 1,
+                "foreground_luminance": 0,
+                "reason": "caller override",
+                "confirmed": True,
+                "confirmed_at": "2026-08-26T00:00:00Z",
+            }
+            draft_path = root / "draft.json"
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            result = self._run(
+                "prepare_reference.py", "--source", str(case / "source.png"),
+                "--draft", str(draft_path), "--output", str(root / "output"), "--freeze",
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("only allowed when the automatic estimate is ambiguous", result.stderr)
+
+    def test_source_color_scope_is_required_before_freeze(self) -> None:
+        case = REPOSITORY / "tests" / "fixtures" / "conformance" / "analytic-fill"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            draft = json.loads((case / "draft.json").read_text(encoding="utf-8"))
+            del draft["source_color_scope"]
+            shutil.copyfile(case / "masks" / "mark.png", root / "mark.png")
+            draft["components"][0]["source_mask_path"] = "mark.png"
+            draft_path = root / "draft.json"
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            result = self._run(
+                "prepare_reference.py", "--source", str(case / "source.png"),
+                "--draft", str(draft_path), "--output", str(root / "output"),
+                "--freeze",
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("source_color_scope", result.stderr)
 
     def test_argparse_failures_emit_one_json_summary(self) -> None:
         cases = (

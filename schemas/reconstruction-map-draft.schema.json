@@ -13,6 +13,7 @@
     "accuracy_target",
     "accuracy_confirmed",
     "normalization",
+    "source_color_scope",
     "viewport",
     "canonical_canvas",
     "target_sizes",
@@ -458,6 +459,7 @@
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
+      "required": ["background_luminance", "foreground_luminance", "reason", "confirmed", "confirmed_at"],
       "properties": {
         "background_luminance": {
           "type": "number",

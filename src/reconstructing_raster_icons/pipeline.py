@@ -358,6 +358,10 @@ def _frozen_normalization(
     except InvalidInputError as error:
         if "ambiguous" not in str(error):
             raise
+    else:
+        raise InvalidInputError(
+            "explicit normalization override is only allowed when the automatic estimate is ambiguous"
+        )
     decision = _normalization_decision(draft)
     return normalize_with_decision(image, decision), copy.deepcopy(dict(normalization))
 
@@ -366,7 +370,7 @@ def _require_source_color_scope(draft: Mapping[str, object]) -> None:
     """Stop before freeze unless a classified non-monochrome source was merged explicitly."""
     scope = draft.get("source_color_scope")
     if scope is None:
-        return
+        raise InvalidInputError("source_color_scope is required before freeze")
     if not isinstance(scope, Mapping):
         raise InvalidInputError("source color scope must be an object")
     classification = scope.get("classification")

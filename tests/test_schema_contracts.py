@@ -143,6 +143,38 @@ class SchemaContractTests(unittest.TestCase):
             with self.assertRaises(jsonschema.ValidationError):
                 validate_document(document, schema_name)
 
+    def test_explicit_override_confirmation_is_required_in_every_contract(self) -> None:
+        cases = (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+            (accepted_report_fixture, "acceptance-report"),
+        )
+        for make_document, schema_name in cases:
+            document = make_document()
+            if schema_name != "acceptance-report":
+                document["source_color_scope"] = {  # type: ignore[index]
+                    "classification": "monochrome", "merge_to_monochrome": None,
+                }
+            normalization = document["normalization"]  # type: ignore[index]
+            normalization["estimator_basis"] = "explicit_override"
+            normalization["explicit_overrides"] = {
+                "background_luminance": 1,
+                "foreground_luminance": 0,
+                "reason": "needed for ambiguous source",
+            }
+            with self.assertRaises(jsonschema.ValidationError, msg=schema_name):
+                validate_document(document, schema_name)
+
+    def test_draft_and_frozen_map_require_source_color_scope(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            del document["source_color_scope"]
+            with self.assertRaises(jsonschema.ValidationError, msg=schema_name):
+                validate_document(document, schema_name)
+
     def test_required_timestamps_are_valid_utc_z_values(self) -> None:
         cases = (
             (draft_fixture, "reconstruction-map-draft", "created_at"),

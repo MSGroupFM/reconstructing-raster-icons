@@ -1,6 +1,6 @@
 {
   "lock_version": 1,
-  "acceptance_model_version": "1.0.1",
+  "acceptance_model_version": "1.0.2",
   "node_version": "22.14.0",
   "node_binaries": {
     "darwin-arm64": {
@@ -32,6 +32,7 @@
     "current_color": "#000000",
     "font_load_system_fonts": false,
     "shape_rendering": 2,
-    "text_rendering": 2
+    "text_rendering": 2,
+    "disable_wasm_trap_handler": true
   }
 }

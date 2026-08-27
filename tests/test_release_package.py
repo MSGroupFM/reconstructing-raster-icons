@@ -136,7 +136,7 @@ class ReleasePackageTests(unittest.TestCase):
                     "scripts/validate_schemas.py",
                     "scripts/validate_skill.py",
                     "src/reconstructing_raster_icons/pipeline.py",
-                    "tests/goldens/acceptance-model-1.0.1.json",
+                    "tests/goldens/acceptance-model-1.0.2.json",
                     "tests/test_release_package.py",
                     "tests/test_vtracer_workflow_contract.py",
                     "references/vtracer-workflow.md",

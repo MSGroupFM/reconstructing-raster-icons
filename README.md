@@ -55,7 +55,7 @@ Before any output write or reconstruction tool call, the skill asks exactly:
 > Подтвердите 98% или укажите другое значение.
 
 Even if the request already names a value, it must be confirmed. The value is
-a threshold on acceptance model `1.0.1`, not a percentage of identical pixels.
+a threshold on acceptance model `1.0.2`, not a percentage of identical pixels.
 
 ## How the skill works
 
@@ -221,7 +221,7 @@ See `references/reconstruction-workflow.md` for the complete workflow,
 - an honest status: `accepted`, `not_accepted`, `incomplete`,
   `non_canonical`, `invalid_input`, or `runtime_error` as applicable.
 
-The final wording is a score such as “98.12/100 under acceptance model 1.0.1
+The final wording is a score such as “98.12/100 under acceptance model 1.0.2
 at target 98/100.” A high score never overrides a failed hard gate.
 
 ## Release archive

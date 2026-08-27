@@ -77,6 +77,7 @@ _RENDER_OPTIONS = {
     "font_load_system_fonts": False,
     "shape_rendering": 2,
     "text_rendering": 2,
+    "disable_wasm_trap_handler": True,
 }
 
 
@@ -162,7 +163,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def load_renderer_lock(path: Path) -> RendererLock:
-    """Load only the exact renderer lock published for acceptance model 1.0.1."""
+    """Load only the exact renderer lock published for acceptance model 1.0.2."""
     value = _load_json(Path(path))
     expected = {
         "lock_version": 1,
@@ -450,7 +451,15 @@ def _stage_bytes(path: Path, data: bytes, mode: int) -> None:
 
 
 def _permission_command(node: Path, read_paths: tuple[Path, ...], write_directory: Path) -> list[str]:
-    command = [str(node), "--max-old-space-size=512", "--permission"]
+    command = [
+        str(node),
+        "--max-old-space-size=512",
+        # V8 normally reserves a large virtual-memory cage for WebAssembly.
+        # The canonical Linux process is intentionally constrained by
+        # RLIMIT_AS, so use Node's supported low-address-space WASM mode.
+        "--disable-wasm-trap-handler",
+        "--permission",
+    ]
     if any(write_directory not in path.parents for path in read_paths):
         raise RendererLockError("private renderer read allowlist escapes the run directory")
     command.append(f"--allow-fs-read={write_directory}")
@@ -458,9 +467,21 @@ def _permission_command(node: Path, read_paths: tuple[Path, ...], write_director
     return command
 
 
+def _invalid_attestation_diagnostic(payload: bytes, stderr: bytes) -> str:
+    """Return bounded startup evidence without hiding a pre-JavaScript failure."""
+    message = stderr[:4096].decode("utf-8", "replace")
+    message = " ".join(message.split())[:512]
+    if message:
+        return f"Node renderer returned invalid attestation evidence: {message}"
+    if payload:
+        return "Node renderer returned invalid attestation evidence: non-JSON stdout"
+    return "Node renderer returned invalid attestation evidence: empty stdout"
+
+
 def _validate_combined_attestation(
     payload: bytes,
     *,
+    stderr: bytes,
     nonce: str,
     node: Path,
     candidate: Path,
@@ -475,7 +496,7 @@ def _validate_combined_attestation(
     try:
         evidence = json.loads(payload.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
-        raise RendererLockError("Node renderer returned invalid attestation evidence") from error
+        raise RendererLockError(_invalid_attestation_diagnostic(payload, stderr)) from error
     identity_keys = {
         "nonce", "exec_path", "node_version", "release_name", "platform", "architecture",
     }
@@ -755,6 +776,7 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         )
         attestation = _validate_combined_attestation(
             completed.stdout,
+            stderr=completed.stderr,
             nonce=nonce,
             node=node,
             candidate=candidate,

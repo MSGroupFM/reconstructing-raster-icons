@@ -35,6 +35,14 @@ CANONICAL_RUNNER_SHA256 = "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c778352
 
 
 class RendererTests(unittest.TestCase):
+    def test_linux_wasm_renderer_disables_the_virtual_memory_cage(self) -> None:
+        command = renderer_module._permission_command(
+            Path("/private/node"),
+            (Path("/private/run/candidate.svg"),),
+            Path("/private/run"),
+        )
+        self.assertIn("--disable-wasm-trap-handler", command)
+
     def test_node_22_runner_does_not_claim_unsupported_network_isolation(self) -> None:
         source = (REPOSITORY / "scripts" / "render_svg.mjs").read_text(encoding="utf-8")
         self.assertNotIn('from "node:net"', source)
@@ -370,6 +378,16 @@ class RendererTests(unittest.TestCase):
                 Image.new(mode, size).save(buffer, format="PNG")
                 with self.assertRaises(RendererLockError):
                     validator(buffer.getvalue(), (128, 128))
+
+    def test_invalid_attestation_reports_bounded_renderer_stderr(self) -> None:
+        diagnostic = getattr(renderer_module, "_invalid_attestation_diagnostic", None)
+        self.assertTrue(callable(diagnostic))
+        if diagnostic is not None:
+            message = diagnostic(b"", b"Fatal process out of memory\n")
+            self.assertEqual(
+                message,
+                "Node renderer returned invalid attestation evidence: Fatal process out of memory",
+            )
 
     def test_darwin_memory_preexec_sets_data_and_resident_limits(self) -> None:
         applied: dict[int, tuple[int, int]] = {}

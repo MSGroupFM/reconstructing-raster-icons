@@ -16,13 +16,16 @@ Reject scripts, handlers, CSS/style/imports, `foreignObject`, `image`, `text`, `
 - at most `2,000,000` path/points characters;
 - XML depth at most `64`;
 - renderer timeout `15 s`;
-- memory limit `512 MiB`.
+- memory limit `512 MiB`: Linux uses `RLIMIT_AS`; Darwin uses
+  `RLIMIT_DATA` plus `RLIMIT_RSS`. Node runs with
+  `--disable-wasm-trap-handler` so V8 does not reserve its normal large
+  WebAssembly memory cage inside the Linux address-space ceiling.
 
 A security or allowlist failure stops before rendering and yields `invalid_input`; do not repair and continue silently.
 
 ## Canonical renderer
 
-Acceptance model `1.0.1` requires the exact `canonical-renderer.lock`:
+Acceptance model `1.0.2` requires the exact `canonical-renderer.lock`:
 
 - Node.js `22.14.0`;
 - `@resvg/resvg-wasm@2.6.2`;
@@ -30,7 +33,7 @@ Acceptance model `1.0.1` requires the exact `canonical-renderer.lock`:
 - WASM SHA-256 `22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70`;
 - loader SHA-256 `10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1`.
 
-Use a transparent sRGB canvas; resolve `currentColor` to black; disable system fonts; render explicit dimensions with maximum side `1024`, no background or crop, and pinned shape/text rendering options. Browser, Inkscape, and native librsvg output is preview-only.
+Use a transparent sRGB canvas; resolve `currentColor` to black; disable system fonts; render explicit dimensions with maximum side `1024`, no background or crop, and pinned shape/text rendering options. Start Node with `--disable-wasm-trap-handler`, the [documented Node 22.14.0 mode](https://nodejs.org/download/release/v22.14.0/docs/api/cli.html#--disable-wasm-trap-handler) for WebAssembly under constrained virtual address space. Browser, Inkscape, and native librsvg output is preview-only.
 
 Run the Node subprocess with read access limited to the candidate, pinned WASM/loader, runner, and unpredictable owner-only workspace. Node `22.14.0` restricts filesystem, child-process, and worker access through its Permission Model, but that version does not mediate network access. The hash-pinned runner imports no network module and initializes the pinned loader from already-read WASM bytes; the safe SVG subset rejects links and external resources before render. Canonical evidence must not claim runtime network denial. An OS network sandbox may add defense in depth, but it is not part of the cross-platform acceptance contract.
 

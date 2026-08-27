@@ -1,4 +1,4 @@
-"""Immutable prepare, evaluate, and finalize stages for acceptance model 1.0.1."""
+"""Immutable prepare, evaluate, and finalize stages for acceptance model 1.0.2."""
 
 from __future__ import annotations
 
@@ -1223,7 +1223,7 @@ def _artifact_gate(
         "kind": "automatic",
         "state": "pass" if passed else "fail",
         "evidence": {"artifact_id": logical_id, "sha256": digest},
-        "evaluator": "acceptance-model-1.0.1",
+        "evaluator": "acceptance-model-1.0.2",
         "evaluated_at": timestamp,
     }
 
@@ -1238,7 +1238,7 @@ def _measurement_gate(
         "evidence": {
             "basis": f"maximum measured deviation={measured:.17g}; tolerance={tolerance:.17g} canonical pixels"
         },
-        "evaluator": "acceptance-model-1.0.1",
+        "evaluator": "acceptance-model-1.0.2",
         "evaluated_at": timestamp,
     }
 

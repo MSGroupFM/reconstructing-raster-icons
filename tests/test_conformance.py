@@ -1,4 +1,4 @@
-"""Independent conformance and adversarial checks for acceptance model 1.0.1."""
+"""Independent conformance and adversarial checks for acceptance model 1.0.2."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ FIXTURES = REPOSITORY / "tests" / "fixtures"
 CONFORMANCE = FIXTURES / "conformance"
 CONTRACTS = FIXTURES / "contracts"
 SECURITY = FIXTURES / "security"
-GOLDEN = REPOSITORY / "tests" / "goldens" / "acceptance-model-1.0.1.json"
+GOLDEN = REPOSITORY / "tests" / "goldens" / "acceptance-model-1.0.2.json"
 FIXED_TIME = "2026-08-26T12:00:00Z"
 PINNED_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
 PINNED_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
@@ -375,6 +375,7 @@ def _verify_test_renderer_contract() -> tuple[Path, Path, Path, Path]:
             "font_load_system_fonts": False,
             "shape_rendering": 2,
             "text_rendering": 2,
+            "disable_wasm_trap_handler": True,
         }
     ):
         raise AssertionError("canonical-renderer.lock does not match the test render contract")
@@ -412,6 +413,7 @@ def _pixel_oracle(
                 [
                     str(node),
                     "--max-old-space-size=512",
+                    "--disable-wasm-trap-handler",
                     "--permission",
                     f"--allow-fs-read={private}",
                     f"--allow-fs-write={private}",
@@ -591,7 +593,7 @@ def _normalized_bytes(report: dict[str, object]) -> bytes:
 def _golden() -> dict[str, object]:
     if not GOLDEN.is_file():
         raise AssertionError(
-            "missing independently checked golden: tests/goldens/acceptance-model-1.0.1.json"
+            "missing independently checked golden: tests/goldens/acceptance-model-1.0.2.json"
         )
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}

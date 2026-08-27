@@ -116,7 +116,7 @@ hashes, selected candidate, component substitutions, and postprocessing log as
 reconstruction evidence.
 
 If the locked renderer and its isolation are proven, report the canonical
-score and status from acceptance model `1.0.1`. If evaluation uses preview-only
+score and status from acceptance model `1.0.2`. If evaluation uses preview-only
 pixels, label the number exactly as a `preview score`, report status
 `non_canonical`, and never say `accepted` even when the preview score reaches
 the target.

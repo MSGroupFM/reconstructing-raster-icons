@@ -723,7 +723,6 @@ CANONICAL_CASE_NAMES = (
     "analytic-fill",
     "impossible-target",
     "missing-component",
-    "multicolor-rejection",
     "noisy-antialias",
     "occlusion-overlap",
     "open-stroke",
@@ -1134,6 +1133,12 @@ class PipelineCorpusTests(unittest.TestCase):
         self.assertTrue(
             issubclass(CanonicalPlatformConformanceTests, unittest.TestCase)
         )
+
+    def test_meaningful_multicolor_source_stops_before_freeze(self) -> None:
+        case = CONFORMANCE / "multicolor-rejection"
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(InvalidInputError, "merge-to-monochrome"):
+                prepare_reference(case / "source.png", case / "draft.json", Path(directory) / "reference")
 
     def test_every_pixel_oracle_record_is_repeatable_and_matches_independent_goldens(self) -> None:
         manifest = _read_json(CONFORMANCE / "manifest.json")

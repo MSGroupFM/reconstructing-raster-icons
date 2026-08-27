@@ -242,8 +242,10 @@ def _relative_luminance(rgba: Image.Image) -> tuple[NDArray[np.float64], NDArray
     return luminance.astype(np.float64, copy=False), pixels[..., 3].astype(np.float64, copy=False)
 
 
-def estimate_normalization(image: Image.Image) -> NormalizationEstimate:
-    """Estimate polarity and coverage using the frozen WCAG/type-7 contract."""
+def estimate_normalization_profile(
+    image: Image.Image,
+) -> tuple[NormalizationEstimate, dict[str, float], str]:
+    """Derive normalized pixels and every frozen automatic estimator value."""
     if not isinstance(image, Image.Image):
         raise TypeError("image must be a PIL Image")
     rgba = _source_profile_to_srgb(ImageOps.exif_transpose(image))
@@ -261,7 +263,10 @@ def estimate_normalization(image: Image.Image) -> NormalizationEstimate:
     opaque_inner = inner & (alpha >= 1.0)
     if not np.any(opaque_inner):
         raise InvalidInputError("inner raster area has no opaque pixels")
-    border_luminance = luminance[outer]
+    # Placed ``contain`` references may leave transparent canvas padding at
+    # the border.  Its RGB bytes are not source background evidence.
+    opaque_border = outer & (alpha >= 1.0)
+    border_luminance = luminance[opaque_border] if np.any(opaque_border) else luminance[outer]
     background = float(np.median(border_luminance))
     foreground_samples = luminance[opaque_inner]
     dark_foreground = float(np.percentile(foreground_samples, 5, method="linear"))
@@ -280,7 +285,24 @@ def estimate_normalization(image: Image.Image) -> NormalizationEstimate:
         foreground_luminance=dark_foreground if dark_contrast > light_contrast else light_foreground,
         polarity="dark" if dark_contrast > light_contrast else "light",
     )
-    return normalize_with_decision(rgba, decision)
+    return (
+        normalize_with_decision(rgba, decision),
+        {
+            "background_luminance": background,
+            "dark_foreground_luminance": dark_foreground,
+            "light_foreground_luminance": light_foreground,
+            "border_variance": float(np.var(border_luminance)),
+            "dark_contrast": dark_contrast,
+            "light_contrast": light_contrast,
+            "contrast": contrast,
+        },
+        decision.polarity,
+    )
+
+
+def estimate_normalization(image: Image.Image) -> NormalizationEstimate:
+    """Estimate polarity and coverage using the frozen WCAG/type-7 contract."""
+    return estimate_normalization_profile(image)[0]
 
 
 def normalize_with_decision(image: Image.Image, decision: NormalizationDecision) -> NormalizationEstimate:

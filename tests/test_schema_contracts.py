@@ -107,6 +107,42 @@ class SchemaContractTests(unittest.TestCase):
                 with self.assertRaises(jsonschema.ValidationError, msg=f"{schema_name}: {ratio}"):
                     validate_document(document, schema_name)
 
+    def test_custom_ratio_uses_the_default_64_max_side_grid(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            document["viewport"]["aspect_ratio"] = "5:7"  # type: ignore[index]
+            document["viewport"]["grid"] = 64  # type: ignore[index]
+            document["viewport"]["view_box"] = [0, 0, 45.714286, 64]  # type: ignore[index]
+            document["canonical_canvas"] = {  # type: ignore[index]
+                "width": 45.714286,
+                "height": 64,
+                "raster_width": 731,
+                "raster_height": 1024,
+            }
+            validate_document(document, schema_name)
+
+    def test_source_color_scope_uses_a_structured_merge_confirmation(self) -> None:
+        for make_document, schema_name in (
+            (draft_fixture, "reconstruction-map-draft"),
+            (frozen_map_fixture, "reconstruction-map"),
+        ):
+            document = make_document()
+            document["source_color_scope"] = {  # type: ignore[index]
+                "classification": "meaningful_multicolor",
+                "merge_to_monochrome": {
+                    "decision": "merge colors into one silhouette",
+                    "confirmed": True,
+                    "confirmed_at": "2026-08-26T00:00:00Z",
+                },
+            }
+            validate_document(document, schema_name)
+            document["source_color_scope"]["merge_to_monochrome"] = {"confirmed": True}  # type: ignore[index]
+            with self.assertRaises(jsonschema.ValidationError):
+                validate_document(document, schema_name)
+
     def test_required_timestamps_are_valid_utc_z_values(self) -> None:
         cases = (
             (draft_fixture, "reconstruction-map-draft", "created_at"),

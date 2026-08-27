@@ -112,32 +112,6 @@
       "status": "not_accepted",
       "stop_reason": null
     },
-    "multicolor-rejection": {
-      "gates": {
-        "auto.components.present": "pass",
-        "auto.integrity.hashes": "pass",
-        "auto.paths.integrity": "fail",
-        "auto.primitives.constraints": "pass",
-        "auto.style.monochrome": "fail",
-        "auto.svg.render": "pass",
-        "auto.svg.safe_subset": "pass",
-        "auto.topology.facts": "pass",
-        "auto.viewport.geometry": "pass"
-      },
-      "identity": true,
-      "aspect_ratio": "1:1",
-      "exit_code": 4,
-      "limit_state": "active",
-      "metrics": {
-        "composite": 100.000000,
-        "contour": 100.000000,
-        "layout": 100.000000,
-        "silhouette": 100.000000,
-        "topology": 100.000000
-      },
-      "status": "not_accepted",
-      "stop_reason": null
-    },
     "noisy-antialias": {
       "gates": {
         "auto.components.present": "pass",

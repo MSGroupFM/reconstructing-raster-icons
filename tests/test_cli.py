@@ -63,6 +63,20 @@ class PipelineCliTests(unittest.TestCase):
         self.assertFalse(json.loads(lines[0])["ok"])
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_multicolor_source_without_merge_confirmation_stops_before_freeze(self) -> None:
+        case = REPOSITORY / "tests" / "fixtures" / "conformance" / "multicolor-rejection"
+        with tempfile.TemporaryDirectory() as directory:
+            result = self._run(
+                "prepare_reference.py",
+                "--source", str(case / "source.png"),
+                "--draft", str(case / "draft.json"),
+                "--output", str(Path(directory) / "output"),
+                "--freeze",
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout)["status"], "invalid_input")
+        self.assertIn("merge-to-monochrome", result.stderr)
+
     def test_argparse_failures_emit_one_json_summary(self) -> None:
         cases = (
             ("prepare_reference.py", ()),

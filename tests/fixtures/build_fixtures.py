@@ -127,8 +127,9 @@ def _draft(
     topology: list[dict[str, str]] | None = None,
     strokes: list[dict[str, object]] | None = None,
     intentional_intersections: list[dict[str, str]] | None = None,
+    source_color_scope: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    return {
+    draft: dict[str, object] = {
         "schema_kind": "reconstruction-map-draft",
         "schema_version": "1.0.0",
         "map_revision": 1,
@@ -194,6 +195,9 @@ def _draft(
         ],
         "refinement_limit": 8,
     }
+    if source_color_scope is not None:
+        draft["source_color_scope"] = source_color_scope
+    return draft
 
 
 def _write_case(
@@ -210,6 +214,7 @@ def _write_case(
     topology: list[dict[str, str]] | None = None,
     strokes: list[dict[str, object]] | None = None,
     intentional_intersections: list[dict[str, str]] | None = None,
+    source_color_scope: dict[str, object] | None = None,
     iterations: int = 1,
 ) -> dict[str, object]:
     case = root / "conformance" / name
@@ -218,7 +223,7 @@ def _write_case(
     for component_id, mask in reference_components.items():
         _png(case / "masks" / f"{component_id}.png", _luma(mask))
     (case / "candidate.svg").write_text(svg + "\n", encoding="utf-8")
-    height, width = source_luma.shape
+    height, width = source_luma.shape[:2]
     draft = _draft(
         source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
         components=components,
@@ -229,6 +234,7 @@ def _write_case(
         topology=topology,
         strokes=strokes,
         intentional_intersections=intentional_intersections,
+        source_color_scope=source_color_scope,
     )
     _json(case / "draft.json", draft)
     return {
@@ -376,11 +382,14 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
         )
     )
 
-    cases.append(
-        _write_case(
-            root,
-            "multicolor-rejection",
-            source_luma=_luma(rectangle),
+    multicolor_source = np.full((1024, 1024, 4), 255, dtype=np.uint8)
+    multicolor_source[rectangle, 0] = 255
+    multicolor_source[rectangle, 1] = 0
+    multicolor_source[rectangle, 2] = 0
+    _write_case(
+        root,
+        "multicolor-rejection",
+            source_luma=multicolor_source,
             reference_components={"mark": rectangle},
             svg=(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
@@ -388,7 +397,10 @@ def _pipeline_cases(root: Path) -> list[dict[str, object]]:
                 '<rect x="32" y="16" width="16" height="32" fill="#ff0000"/></g></svg>'
             ),
             components=[_component("mark", geometry="mixed")],
-        )
+            source_color_scope={
+                "classification": "meaningful_multicolor",
+                "merge_to_monochrome": None,
+            },
     )
 
     dot = _rect(square, (800, 800, 816, 816))

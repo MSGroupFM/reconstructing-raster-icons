@@ -60,6 +60,9 @@
     "normalization": {
       "$ref": "#/$defs/normalization"
     },
+    "source_color_scope": {
+      "$ref": "#/$defs/source_color_scope"
+    },
     "viewport": {
       "$ref": "#/$defs/viewport"
     },
@@ -469,6 +472,30 @@
         "reason": {
           "type": "string",
           "minLength": 1
+        },
+        "confirmed": {
+          "const": true
+        },
+        "confirmed_at": {
+          "type": "string",
+          "format": "utc-date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+        }
+      }
+    },
+    "source_color_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "merge_to_monochrome"],
+      "properties": {
+        "classification": {
+          "enum": ["monochrome", "meaningful_multicolor", "gradient", "intentional_transparency"]
+        },
+        "merge_to_monochrome": {
+          "anyOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/confirmation"}
+          ]
         }
       }
     },

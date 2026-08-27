@@ -44,10 +44,12 @@ from .metrics import (
 )
 from .raster import (
     FrozenPlacement,
+    NormalizationEstimate,
     NormalizationDecision,
     apply_frozen_placement,
     build_uncertainty,
     canonical_size,
+    estimate_normalization_profile,
     load_raster,
     normalize_with_decision,
     place_raster,
@@ -319,6 +321,62 @@ def _normalization_decision(draft: Mapping[str, object]) -> NormalizationDecisio
         raise InvalidInputError("normalization luminance values are invalid") from error
 
 
+def _frozen_normalization(
+    draft: Mapping[str, object], image: Image.Image
+) -> tuple[NormalizationEstimate, dict[str, object]]:
+    """Bind automatic normalization to the placed source, never caller values."""
+    normalization = draft.get("normalization")
+    if not isinstance(normalization, Mapping):
+        raise InvalidInputError("normalization must be an object")
+    basis = normalization.get("estimator_basis")
+    if basis == "automatic":
+        normalized, computed, polarity = estimate_normalization_profile(image)
+        supplied = normalization.get("estimator")
+        if not isinstance(supplied, Mapping) or normalization.get("foreground_polarity") != polarity:
+            raise InvalidInputError("automatic normalization estimator does not match the placed source")
+        for field, expected in computed.items():
+            try:
+                actual = float(supplied[field])
+            except (KeyError, TypeError, ValueError) as error:
+                raise InvalidInputError("automatic normalization estimator does not match the placed source") from error
+            if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12):
+                raise InvalidInputError("automatic normalization estimator does not match the placed source")
+        frozen = copy.deepcopy(dict(normalization))
+        frozen["foreground_polarity"] = polarity
+        frozen["estimator"] = computed
+        frozen["explicit_overrides"] = None
+        return normalized, frozen
+    if basis != "explicit_override":
+        raise InvalidInputError("normalization estimator basis is invalid")
+    overrides = normalization.get("explicit_overrides")
+    if not isinstance(overrides, Mapping) or overrides.get("confirmed") is not True:
+        raise InvalidInputError("explicit normalization override must be confirmed")
+    if not isinstance(overrides.get("confirmed_at"), str) or not str(overrides.get("reason", "")).strip():
+        raise InvalidInputError("explicit normalization override must record confirmation and reason")
+    try:
+        estimate_normalization_profile(image)
+    except InvalidInputError as error:
+        if "ambiguous" not in str(error):
+            raise
+    decision = _normalization_decision(draft)
+    return normalize_with_decision(image, decision), copy.deepcopy(dict(normalization))
+
+
+def _require_source_color_scope(draft: Mapping[str, object]) -> None:
+    """Stop before freeze unless a classified non-monochrome source was merged explicitly."""
+    scope = draft.get("source_color_scope")
+    if scope is None:
+        return
+    if not isinstance(scope, Mapping):
+        raise InvalidInputError("source color scope must be an object")
+    classification = scope.get("classification")
+    confirmation = scope.get("merge_to_monochrome")
+    if classification == "monochrome":
+        return
+    if not isinstance(confirmation, Mapping) or confirmation.get("confirmed") is not True:
+        raise InvalidInputError("meaningful source color scope requires merge-to-monochrome confirmation")
+
+
 def _round_fraction(value: Fraction) -> int:
     return (2 * value.numerator + value.denominator) // (2 * value.denominator)
 
@@ -439,6 +497,33 @@ def _validate_svg_snapshot(data: bytes) -> SafeSvgDocument:
         )
 
 
+def _candidate_paint_order(
+    document: SafeSvgDocument, components: Sequence[Mapping[str, object]]
+) -> tuple[str, ...]:
+    """Map unique frozen SVG IDs to their candidate top-level document order."""
+    component_by_svg: dict[str, str] = {}
+    for component in components:
+        svg_id = str(component["svg_id"])
+        if svg_id in component_by_svg:
+            raise InvalidInputError("frozen component svg_id values must be unique")
+        component_by_svg[svg_id] = str(component["component_id"])
+    top_level = list(document.root)
+    observed: list[str] = []
+    for child in top_level:
+        svg_id = child.attrib.get("id")
+        if svg_id in component_by_svg:
+            observed.append(svg_id)
+    for element in document.root.iter():
+        svg_id = element.attrib.get("id")
+        if svg_id not in component_by_svg:
+            continue
+        if element not in top_level:
+            raise InvalidInputError("candidate component roots must be top-level elements")
+        if observed.count(svg_id) != 1:
+            raise InvalidInputError("candidate component roots must be unique")
+    return tuple(component_by_svg[svg_id] for svg_id in observed)
+
+
 def _prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, object]:
     """Validate and freeze one reconstruction-map revision and all reference masks."""
     source_path = Path(source)
@@ -494,8 +579,8 @@ def _prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, obj
             for item in document["user_confirmations"]  # type: ignore[union-attr]
         ),
     )
-    decision = _normalization_decision(document)
-    normalized = normalize_with_decision(placement.image, decision)
+    _require_source_color_scope(document)
+    normalized, frozen_normalization = _frozen_normalization(document, placement.image)
     diagonal = math.hypot(*placement.canvas_size)
     delta = max(1, math.floor(0.001 * diagonal + 0.5))
     uncertainty = build_uncertainty(normalized.coverage, delta)
@@ -514,7 +599,7 @@ def _prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, obj
         mask_payload = _snapshot_bytes(mask_source, "component source mask", 50 * 1024 * 1024)
         mask_image = _load_raster_snapshot(mask_payload, mask_source.name or "component.png")
         placed_mask = apply_frozen_placement(mask_image, placement)
-        mask = _component_mask(placed_mask, decision.polarity)
+        mask = _component_mask(placed_mask, normalized.polarity)
         bbox, centroid, area = _mask_geometry(mask)
         payload = _mask_png(mask)
         component_id = str(component["component_id"])
@@ -544,6 +629,7 @@ def _prepare_reference(source: Path, draft: Path, output: Path) -> dict[str, obj
             "schema_kind": "reconstruction-map",
             "frozen_at": _utc_now(),
             "components": frozen_components,
+            "normalization": frozen_normalization,
             "reference_mask": {
                 "logical_id": f"reference-mask-{suffix}",
                 "sha256": _sha256(reference_payload),
@@ -1281,6 +1367,7 @@ def _evaluate_candidate(
     components = frozen_map["components"]
     if not isinstance(components, list) or any(not isinstance(item, Mapping) for item in components):
         raise InvalidInputError("frozen map components are malformed")
+    paint_order = _candidate_paint_order(document, components)
     reference_components: dict[str, NDArray[np.bool_]] = {}
     for component in components:
         component_id = str(component["component_id"])
@@ -1341,7 +1428,7 @@ def _evaluate_candidate(
             frozen_map["topology_facts"],  # type: ignore[arg-type]
             visible_masks=visible_masks,
             isolated_masks=isolated_masks,
-            paint_order=tuple(str(item["component_id"]) for item in components),
+            paint_order=paint_order,
             uncertainty=uncertainty,
         )
         scores = MetricSet(

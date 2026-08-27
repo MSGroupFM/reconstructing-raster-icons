@@ -90,6 +90,64 @@ def fake_diagnostics(document, components, size: tuple[int, int], workspace: Pat
 
 
 class PrepareReferenceTests(unittest.TestCase):
+    def test_rejects_tampered_automatic_estimator_before_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            draft["normalization"]["estimator"]["background_luminance"] = 0.8
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+
+            with self.assertRaisesRegex(InvalidInputError, "automatic normalization estimator"):
+                prepare_reference(source, draft_path, root / "reference")
+
+    def test_explicit_normalization_override_requires_structured_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            pixels = np.full((64, 64), 153, dtype=np.uint8)
+            pixels[16:48, 16:48] = 102
+            encoded = BytesIO()
+            Image.fromarray(pixels, mode="L").save(encoded, format="PNG")
+            source.write_bytes(encoded.getvalue())
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            draft["source_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            with self.assertRaisesRegex(InvalidInputError, "automatic foreground/background estimate is ambiguous"):
+                prepare_reference(source, draft_path, root / "automatic-reference")
+            draft["normalization"]["estimator_basis"] = "explicit_override"
+            draft["normalization"]["explicit_overrides"] = {
+                "background_luminance": 0.32,
+                "foreground_luminance": 0.13,
+                "reason": "source is ambiguous",
+            }
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+
+            with self.assertRaisesRegex(InvalidInputError, "explicit normalization override"):
+                prepare_reference(source, draft_path, root / "reference")
+
+            draft["normalization"]["explicit_overrides"].update({
+                "confirmed": True,
+                "confirmed_at": "2026-08-26T00:00:00Z",
+            })
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            summary = prepare_reference(source, draft_path, root / "confirmed-reference")
+            self.assertEqual(summary["artifact_id"], "reconstruction-map-r01")
+
+    def test_meaningful_multicolor_source_stops_without_merge_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            draft["source_color_scope"] = {
+                "classification": "meaningful_multicolor",
+                "merge_to_monochrome": None,
+            }
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+
+            with self.assertRaisesRegex(InvalidInputError, "merge-to-monochrome"):
+                prepare_reference(source, draft_path, root / "reference")
+
     def test_refuses_unconfirmed_draft_before_creating_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -240,6 +298,75 @@ class PrepareReferenceTests(unittest.TestCase):
 
 
 class EvaluateCandidateTests(unittest.TestCase):
+    def test_reversed_top_level_candidate_layers_fail_paint_order_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, draft_path = write_reference_inputs(root)
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            component = dict(draft["components"][0])
+            component["component_id"] = "back"
+            component["svg_id"] = "back"
+            component["source_mask_path"] = "back.png"
+            draft["components"] = [component, draft["components"][0]]
+            draft["topology_facts"] = [
+                {"relation": "overlaps", "subject": "back", "object": "mark"},
+                {"relation": "paint_order", "subject": "back", "object": "mark"}
+            ]
+            (root / "back.png").write_bytes((root / "mark.png").read_bytes())
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            reference = root / "reference"
+            prepare_reference(source, draft_path, reference)
+            candidate = root / "candidate.svg"
+            candidate.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                '<rect id="mark" x="16" y="16" width="32" height="32" fill="currentColor"/>'
+                '<rect id="back" x="16" y="16" width="32" height="32" fill="currentColor"/>'
+                "</svg>",
+                encoding="utf-8",
+            )
+
+            def diagnostics(document, components, size, workspace):
+                mask = np.zeros((size[1], size[0]), dtype=bool)
+                mask[256:768, 256:768] = True
+                return {"visible": {"back": mask, "mark": mask}, "isolated": {"back": mask, "mark": mask}}
+
+            evaluate_candidate(
+                reference / "reconstruction-map-r01.json",
+                candidate,
+                0,
+                root / "run",
+                renderer=fake_renderer,
+                diagnostic_renderer=diagnostics,
+            )
+            evaluation = json.loads((root / "run" / "evaluation-i00.json").read_text())
+            topology_gate = next(
+                item for item in evaluation["report"]["gates"]
+                if item["gate_id"] == "auto.topology.facts"
+            )
+            self.assertEqual(topology_gate["state"], "fail")
+
+    def test_candidate_component_roots_are_unique_and_top_level(self) -> None:
+        candidates = {
+            "duplicate": (
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                '<g id="mark"/><rect id="mark" x="16" y="16" width="32" height="32" '
+                'fill="currentColor"/></svg>'
+            ),
+            "nested": (
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                '<g><rect id="mark" x="16" y="16" width="32" height="32" '
+                'fill="currentColor"/></g></svg>'
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path, candidate = self._prepared(root)
+            for name, payload in candidates.items():
+                with self.subTest(candidate=name):
+                    candidate.write_text(payload, encoding="utf-8")
+                    with self.assertRaisesRegex(InvalidInputError, "component roots"):
+                        evaluate_candidate(map_path, candidate, 0, root / name)
+
     def _prepared(self, root: Path) -> tuple[Path, Path]:
         source, draft = write_reference_inputs(root)
         output = root / "reference"
@@ -1341,6 +1468,8 @@ class FinalizeReviewTests(unittest.TestCase):
                 "background_luminance": 1,
                 "foreground_luminance": 0,
                 "reason": "confirmed transparent-black foreground",
+                "confirmed": True,
+                "confirmed_at": "2026-08-26T00:00:00Z",
             }
             draft_path.write_text(json.dumps(draft))
             reference = root / "reference"

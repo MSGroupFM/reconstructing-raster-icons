@@ -29,9 +29,21 @@ python scripts/prepare_reference.py --source SOURCE --draft DRAFT --output OUTPU
 
 This atomically creates a new immutable `reconstruction-map-rNN.json`, reference masks, hashes, and stage report. Never overwrite a revision or derive reference data from a candidate.
 
-## Reconstruct and refine
+## Trace, postprocess, and refine
 
-Use lines, circles, ellipses, rectangles, and minimal segments for structural regions. Trace only genuinely organic regions, simplify within the frozen tolerance, and retain intentional irregularity supported by the raster. Give each semantic component its frozen top-level SVG ID; preserve holes, connections, overlaps, layer order, caps, and joins. Final SVG has flattened geometry and no degenerate segments.
+After the freeze, follow [the mandatory VTracer workflow](vtracer-workflow.md).
+VTracer, not manual drawing, creates the initial geometry. Generate and compare
+multiple black-and-white spline traces of the same frozen source, retain their
+provenance, and select the best supported complete trace. Component-wise
+selection is allowed only between those same-source VTracer variants and only
+with per-component evidence.
+
+Postprocess shape geometry only when the frozen source proves a circle,
+ellipse, or straight segment. Preserve VTracer-derived organic paths without
+manual node sculpting or reinterpretation. Give each semantic component its
+frozen top-level SVG ID; preserve holes, connections, overlaps, layer order,
+caps, and joins. Final SVG has normalized and flattened geometry, `currentColor`
+by default, and no degenerate segments.
 
 For iteration `0..refinement_limit`:
 
@@ -40,6 +52,10 @@ python scripts/evaluate_icon.py --map MAP --candidate SVG --iteration N --run-di
 ```
 
 Inspect preview, overlay, diff, per-component metrics, topology, and gates. Fix only classified evidence-backed differences. The default is baseline plus eight refinements; stop on acceptance, user request, limit, error, or the stall rule in the acceptance reference.
+
+Review the rendered candidate at 128, 64, 32, and 24 px. If the full
+composition cannot preserve a detail at a requested size, fail the target-size
+gate and report the limitation instead of deleting or enlarging source details.
 
 ## Semantic review and finalization
 

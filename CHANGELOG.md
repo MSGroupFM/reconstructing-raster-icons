@@ -5,7 +5,16 @@ and this project uses semantic versioning.
 
 ## Unreleased
 
-- No unreleased changes recorded.
+### Changed
+
+- VTracer is now the mandatory candidate generator after the source map is
+  frozen. The workflow requires a recorded multi-variant black-and-white spline
+  sweep, evidence-based selection, and same-source trace provenance.
+- Shape-changing postprocessing is limited to source-evidenced circles,
+  ellipses, and straight segments; manual organic-path reconstruction and
+  alternate-tracer fallbacks are prohibited.
+- Reports now explicitly distinguish a preview score from canonical acceptance
+  and require target-size review at 128, 64, 32, and 24 px.
 
 ## 0.1.0 — local release candidate prepared 2026-08-26
 

@@ -2,9 +2,10 @@
 
 `reconstructing-raster-icons` is a Codex skill and deterministic validation
 toolkit for rebuilding a raster icon as editable SVG. It records the source
-structure before drawing, renders the candidate with a hash-pinned WASM
-renderer, and reports a composite fidelity score plus blocking automatic and
-semantic gates.
+structure before tracing, generates candidates only with VTracer, permits only
+source-evidenced circle, ellipse, and straight-segment corrections, renders the
+candidate with a hash-pinned WASM renderer, and reports a composite fidelity
+score plus blocking automatic and semantic gates.
 
 Version `0.1.0` is prepared for monochrome icons only: one opaque foreground
 color on a transparent background. Meaningful multicolor, gradients,
@@ -20,6 +21,11 @@ does not claim automatic semantic color detection.
 - the exact npm graph in `package-lock.json`, including
   `@resvg/resvg-wasm@2.6.2` and the platform-pinned Node binary;
 - Python packages from `requirements-lock.txt`.
+- the official [VisionCortex VTracer](https://www.visioncortex.org/vtracer/)
+  CLI with black-and-white spline tracing,
+  threshold/adaptive controls, simplification, speckle filtering, and path
+  precision support. Record `vtracer --version` and every exact trace command;
+  VTracer is a candidate generator, not the canonical acceptance renderer.
 
 The acceptance renderer does not download dependencies while evaluating an
 icon. Provision dependencies before starting a reconstruction.
@@ -55,7 +61,10 @@ a threshold on acceptance model `1.0.0`, not a percentage of identical pixels.
 
 Create a schema-valid reconstruction-map draft with the confirmed target,
 viewport, normalization decision, components, constraints, and confirmation
-records. Then run the immutable stages:
+records. Freeze it, run the required same-source VTracer sweep described in
+`references/vtracer-workflow.md`, select by metric plus overlay/diff, and apply
+only the allowed primitive corrections. Then run the immutable evaluation
+stages:
 
 ```bash
 .venv/bin/python scripts/prepare_reference.py \
@@ -72,6 +81,7 @@ records. Then run the immutable stages:
 ```
 
 See `references/reconstruction-workflow.md` for the complete workflow,
+`references/vtracer-workflow.md` for tracing, selection, and postprocessing,
 `references/acceptance-model.md` for formulas and gates, and
 `references/security-and-rendering.md` for the input and renderer boundary.
 
@@ -108,6 +118,8 @@ harness provenance; reusable scenario prompts remain in the archive.
 ## Current limitations
 
 - Reconstruction is monochrome-only in `0.1.0`.
+- Candidate generation requires VTracer; no manual or alternate-tracer fallback
+  is part of this workflow.
 - Semantic gates require human review; `not_evaluated` cannot become
   `accepted`.
 - Baseline plus at most eight refinements is the default; stalled or exhausted

@@ -18,6 +18,7 @@ pyproject.toml
 references/acceptance-model.md
 references/reconstruction-workflow.md
 references/security-and-rendering.md
+references/vtracer-workflow.md
 release-manifest.txt
 requirements-lock.txt
 requirements.txt
@@ -47,6 +48,7 @@ tests/behavioral/scenarios/accuracy-confirmation.md
 tests/behavioral/scenarios/attachment-instructions.md
 tests/behavioral/scenarios/universality.md
 tests/behavioral/scenarios/viewport-and-multicolor.md
+tests/behavioral/scenarios/vtracer-only-pipeline.md
 tests/fixtures/build_fixtures.py
 tests/fixtures/conformance/analytic-fill/candidate.svg
 tests/fixtures/conformance/analytic-fill/draft.json
@@ -137,3 +139,4 @@ tests/test_renderer.py
 tests/test_safe_svg.py
 tests/test_schema_contracts.py
 tests/test_validate_skill.py
+tests/test_vtracer_workflow_contract.py

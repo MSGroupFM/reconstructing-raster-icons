@@ -96,7 +96,7 @@ class ReleasePackageTests(unittest.TestCase):
             with zipfile.ZipFile(first_zip) as archive:
                 infos = archive.infolist()
                 names = [info.filename for info in infos]
-                self.assertEqual(len(names), 139)
+                self.assertEqual(len(names), 142)
                 self.assertEqual(
                     names,
                     (REPOSITORY / "release-manifest.txt").read_text(encoding="utf-8").splitlines(),
@@ -134,6 +134,9 @@ class ReleasePackageTests(unittest.TestCase):
                     "src/reconstructing_raster_icons/pipeline.py",
                     "tests/goldens/acceptance-model-1.0.0.json",
                     "tests/test_release_package.py",
+                    "tests/test_vtracer_workflow_contract.py",
+                    "references/vtracer-workflow.md",
+                    "tests/behavioral/scenarios/vtracer-only-pipeline.md",
                 }
                 self.assertTrue(required.issubset(names), sorted(required - set(names)))
                 self.assertTrue(any(name.startswith("tests/fixtures/conformance/") for name in names))

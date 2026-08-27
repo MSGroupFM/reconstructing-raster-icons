@@ -47,6 +47,7 @@ jobs:
           tests.test_safe_svg
           tests.test_schema_contracts
           tests.test_validate_skill
+          tests.test_vtracer_workflow_contract
           tests.test_conformance.FixtureGeneratorTests
           tests.test_conformance.IndependentMetricGoldenTests
           tests.test_conformance.PipelineCorpusTests

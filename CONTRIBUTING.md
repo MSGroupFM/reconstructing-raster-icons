@@ -18,6 +18,11 @@ Do not install packages during a reconstruction run. Do not replace the pinned
 renderer with a browser, native renderer, or system Node fallback for
 acceptance evidence.
 
+Reconstruction runs also require the official VisionCortex VTracer CLI. Record
+its exact version and invocation per candidate. VTracer generates candidate
+geometry; it does not replace the locked acceptance renderer or grant canonical
+status.
+
 ## RED/GREEN workflow
 
 For a feature or bug fix:

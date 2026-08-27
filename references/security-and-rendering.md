@@ -6,7 +6,7 @@ Accept a single-frame PNG, JPEG, or WebP up to `50 MiB`, `16 MP`, and `8192 px` 
 
 ## Safe SVG subset
 
-Treat candidates as untrusted bytes. Reject above `5 MiB`, then raw-scan before parsing for NUL, DTD/entity declarations, forbidden URI schemes, and processing instructions other than one leading XML declaration. Parse with `defusedxml.ElementTree`, then allowlist.
+Treat candidates, including every VTracer output, as untrusted bytes. Reject above `5 MiB`, then raw-scan before parsing for NUL, DTD/entity declarations, forbidden URI schemes, and processing instructions other than one leading XML declaration. Parse with `defusedxml.ElementTree`, then allowlist.
 
 Allowed elements: `svg`, `g`, `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, `title`, `desc`. Permit only published geometry, presentation, ID, role, and accessibility attributes. Final candidates contain no transforms.
 

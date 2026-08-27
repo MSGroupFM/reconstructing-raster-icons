@@ -63,6 +63,42 @@ class VTracerWorkflowContractTests(unittest.TestCase):
             with self.subTest(condition=condition):
                 self.assertIn(condition, selection)
 
+    def test_trace_input_preserves_antialiased_edge_coverage(self) -> None:
+        workflow = (ROOT / "references" / "vtracer-workflow.md").read_text(
+            encoding="utf-8"
+        )
+        frozen_input = workflow.split("## Frozen trace input", 1)[1].split(
+            "## Source-evidenced sweep", 1
+        )[0]
+        frozen_input = " ".join(frozen_input.split())
+
+        required_contract = (
+            "cleaned grayscale trace master",
+            "preserving the foreground shape and antialiased edge coverage",
+            "Do not hard-threshold",
+            "diagnostic binary masks",
+            "never VTracer input",
+            "`bw` is a VTracer clustering preset",
+        )
+        for clause in required_contract:
+            with self.subTest(clause=clause):
+                self.assertIn(clause, frozen_input)
+
+    def test_target_size_review_renders_each_size_from_final_svg(self) -> None:
+        workflow = (ROOT / "references" / "reconstruction-workflow.md").read_text(
+            encoding="utf-8"
+        )
+        workflow = " ".join(workflow.split())
+
+        required_contract = (
+            "render the final SVG independently",
+            "128, 64, 32, and 24 px",
+            "Do not resize one raster preview",
+        )
+        for clause in required_contract:
+            with self.subTest(clause=clause):
+                self.assertIn(clause, workflow)
+
     def test_release_manifest_includes_the_vtracer_contract_and_scenario(self) -> None:
         entries = set(
             (ROOT / "release-manifest.txt").read_text(encoding="utf-8").splitlines()

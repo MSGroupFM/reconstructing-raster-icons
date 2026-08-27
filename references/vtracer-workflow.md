@@ -34,10 +34,22 @@ Record at least:
 - VTracer version, exact command, and complete parameters;
 - output candidate hash.
 
-If crop, orientation, luminance normalization, or foreground extraction is
-needed, freeze it before tracing. Never alter the trace input, reference masks,
-uncertainty, or tolerances after seeing a candidate. A new input decision
-requires a new reconstruction-map revision and a fresh sweep.
+Prepare a cleaned grayscale trace master for VTracer. Remove the paper tone,
+texture, and only source-evidenced non-semantic specks while preserving the
+foreground shape and antialiased edge coverage. Apply crop, orientation,
+centered `contain`, luminance normalization, and any documented contrast curve
+once, then freeze the resulting bytes and hash before candidate generation.
+
+Do not hard-threshold the trace master into a two-value `0/255` image. The
+reference, uncertainty, and diagnostic binary masks are measurement artifacts;
+they are never VTracer input. `bw` is a VTracer clustering preset that separates
+foreground from background during tracing, not an instruction to pre-binarize
+the source. If the original artwork is genuinely one-bit, preserve those source
+bytes rather than manufacturing antialiasing.
+
+Never alter the trace input, reference masks, uncertainty, or tolerances after
+seeing a candidate. A new input decision requires a new reconstruction-map
+revision and a fresh sweep.
 
 ## Source-evidenced sweep
 
@@ -108,8 +120,12 @@ Non-shaping cleanup may:
 ## Evaluation and reporting
 
 Evaluate the selected/postprocessed candidate with the frozen map. Inspect
-component metrics, topology, preview, overlay, and diff, then review 128, 64, 32, and 24 px. Do not delete legitimate detail merely to pass a small-size
-gate; report the failed size and reason.
+component metrics, topology, preview, overlay, and diff. Render the final SVG
+independently at exactly 128, 64, 32, and 24 px; each target artifact must come
+from a fresh SVG render and retain its own dimensions and hash. Do not resize
+one raster preview or a large master PNG to obtain the smaller checks. Do not
+delete legitimate detail merely to pass a small-size gate; report the failed
+size and reason.
 
 Retain the VTracer version, variant log, exact commands, source hash, candidate
 hashes, selected candidate, component substitutions, and postprocessing log as

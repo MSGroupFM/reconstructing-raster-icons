@@ -7,7 +7,7 @@ source-evidenced circle, ellipse, and straight-segment corrections, renders the
 candidate with a hash-pinned WASM renderer, and reports a composite fidelity
 score plus blocking automatic and semantic gates.
 
-Version `0.1.0` is prepared for monochrome icons only: one opaque foreground
+Version `0.1.0` supports monochrome icons only: one opaque foreground
 color on a transparent background. Meaningful multicolor, gradients,
 intentional translucency, photographs, and painterly images require a declared
 analysis/user scope decision and stop for its required confirmation instead of
@@ -66,10 +66,12 @@ candidate meets the confirmed target.
 1. **Confirm accuracy.** The skill asks the required question above before it
    writes a file, inspects or installs VTracer, or starts reconstruction. The
    default is `98/100`, but it is never silently assumed.
-2. **Freeze the source contract.** Normalize the source once, decide the
-   monochrome foreground/background treatment, inventory components and
-   topology, confirm the viewport, and freeze the reconstruction map, masks,
-   ambiguities, gates, and hashes.
+2. **Freeze the source contract.** Build one cleaned grayscale trace master,
+   retaining antialiased edge coverage; decide the monochrome
+   foreground/background treatment, inventory components and topology,
+   confirm the viewport, and freeze the reconstruction map, masks,
+   ambiguities, gates, and hashes. Binary reference masks remain measurement
+   artifacts and are not VTracer input.
 3. **Generate a VTracer sweep.** Trace the exact same frozen source into at
    least three black-and-white spline candidates. Record the VTracer version,
    every complete command and parameter set, and all source, map, and candidate
@@ -85,9 +87,10 @@ candidate meets the confirmed target.
    `currentColor`, restore semantic IDs/groups, and remove unsafe or redundant
    content.
 6. **Evaluate without moving the goalposts.** Run the baseline plus up to eight
-   evidence-driven refinements by default, review `128`, `64`, `32`, and `24`
-   px, and never change the target, tolerances, frozen map, or uncertainty to
-   obtain acceptance.
+   evidence-driven refinements by default. Render the final SVG independently
+   at exactly `128`, `64`, `32`, and `24` px; never downscale one master PNG for
+   target-size review. Never change the target, tolerances, frozen map, or
+   uncertainty to obtain acceptance.
 7. **Report the real status.** Canonical acceptance requires the locked
    renderer, its scoped runtime and Permission Model controls, the unrounded
    composite score, and every mandatory gate. Preview-only evaluation is

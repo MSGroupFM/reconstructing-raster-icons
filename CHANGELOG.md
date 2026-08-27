@@ -5,8 +5,17 @@ and this project uses semantic versioning.
 
 ## Unreleased
 
+## 0.1.0 — 2026-08-28
+
 ### Changed
 
+- The VTracer input contract now requires one frozen cleaned grayscale trace
+  master with preserved antialiased edge coverage. `bw` is explicitly defined
+  as a VTracer clustering preset; binary reference and diagnostic masks are not
+  trace inputs.
+- Target-size review now requires independent renders from the final SVG at
+  exactly 128, 64, 32, and 24 px. Downscaling one raster preview or master PNG
+  is prohibited.
 - VTracer is now the mandatory candidate generator after the source map is
   frozen. The workflow requires a recorded multi-variant black-and-white spline
   sweep, evidence-based selection, and same-source trace provenance.
@@ -51,12 +60,6 @@ and this project uses semantic versioning.
 - README now documents the complete workflow and includes real phone and
   strategy-board previews from before and after the VTracer-only process.
 
-## 0.1.0 — local release candidate prepared 2026-08-26
-
-This release candidate has not been tagged or published. GitHub Actions at
-`cae7f72` passed canonical Linux x64 and Darwin arm64, but the new unpushed
-corpus `1.0.1` change requires a full post-push CI run before publication.
-
 ### Added
 
 - Accuracy confirmation before any reconstruction write, with `98/100` as the
@@ -86,7 +89,6 @@ corpus `1.0.1` change requires a full post-push CI run before publication.
 - A clean Python `3.11.16` environment installed `requirements-lock.txt` with
   `--require-hashes`, and online host `npm ci --no-audit --no-fund` completed
   with the locked Node `22.14.0` and WASM artifacts verified.
-- GitHub Actions at `cae7f72` is **VERIFIED** with successful canonical Linux
-  x64 and Darwin arm64 jobs. The unpushed corpus `1.0.1` comparator change is
-  absent from that evidence; its post-push full CI record remains **UNVERIFIED**
-  and blocks publication.
+- GitHub Actions at `cae7f72` is the last recorded **VERIFIED** run with
+  successful canonical Linux x64 and Darwin arm64 jobs. The `v0.1.0` tag commit
+  has not yet completed post-push CI, so remote publication remains blocked.

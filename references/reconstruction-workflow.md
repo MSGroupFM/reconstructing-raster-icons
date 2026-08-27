@@ -53,9 +53,12 @@ python scripts/evaluate_icon.py --map MAP --candidate SVG --iteration N --run-di
 
 Inspect preview, overlay, diff, per-component metrics, topology, and gates. Fix only classified evidence-backed differences. The default is baseline plus eight refinements; stop on acceptance, user request, limit, error, or the stall rule in the acceptance reference.
 
-Review the rendered candidate at 128, 64, 32, and 24 px. If the full
-composition cannot preserve a detail at a requested size, fail the target-size
-gate and report the limitation instead of deleting or enlarging source details.
+For target-size review, render the final SVG independently at exactly 128, 64,
+32, and 24 px. Record each target PNG's actual dimensions and hash. Do not
+resize one raster preview or a large master PNG to produce the smaller targets.
+If the full composition cannot preserve a detail at a requested size, fail the
+target-size gate and report the limitation instead of deleting or enlarging
+source details.
 
 ## Semantic review and finalization
 

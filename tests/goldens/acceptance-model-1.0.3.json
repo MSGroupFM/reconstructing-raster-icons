@@ -32,7 +32,7 @@
       }
     }
   },
-  "model_version": "1.0.2",
+  "model_version": "1.0.3",
   "pipeline_cases": {
     "analytic-fill": {
       "gates": {

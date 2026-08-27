@@ -1,4 +1,4 @@
-# Acceptance model 1.0.2
+# Acceptance model 1.0.3
 
 ## Score
 

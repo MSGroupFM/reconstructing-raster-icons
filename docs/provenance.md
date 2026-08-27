@@ -26,9 +26,19 @@ dependency `@resvg/resvg-wasm@2.6.2` remains under MPL-2.0 with the exact npm
 integrity recorded in `THIRD_PARTY_NOTICES.md`, `package-lock.json`, and
 `canonical-renderer.lock`.
 
+The lock's `512 MiB` control is the V8 old-space setting, not a measured or
+enforced ceiling for RSS, total process memory, or virtual address space.
+Disabling the WASM trap handler changes V8's virtual-address reservation mode;
+it does not create a total-memory boundary. External cgroup or platform
+confinement is optional defense in depth and is not acceptance provenance.
+
 ## Publication status
 
 This provenance record accompanies a local release candidate whose publication
-readiness is blocked pending mandatory live Ubuntu x64 canonical zero-skip CI.
+readiness is blocked pending mandatory live Ubuntu x64 and macOS 15 arm64
+canonical zero-skip CI.
+Native local Darwin arm64 canonical execution passed all nine cases twice on
+2026-08-27. That host evidence is **VERIFIED**, but the post-push macOS CI record
+and Linux x64 GREEN remain **UNVERIFIED** and are both publication blockers.
 It does not assert that a GitHub repository, remote, tag, package, or release
 has been created or published.

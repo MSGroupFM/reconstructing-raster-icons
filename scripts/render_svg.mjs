@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 import { initWasm, Resvg } from "../node_modules/@resvg/resvg-wasm/index.mjs";
 
 function runtimeIdentity(nonce) {
+  const oldSpaceArgument = process.execArgv.find((value) => value.startsWith("--max-old-space-size="));
+  const oldSpaceValue = oldSpaceArgument?.slice("--max-old-space-size=".length);
   return {
     nonce,
     exec_path: process.execPath,
@@ -13,6 +15,10 @@ function runtimeIdentity(nonce) {
     release_name: process.release?.name,
     platform: process.platform,
     architecture: process.arch,
+    v8_old_space_mib: oldSpaceValue && /^\d+$/.test(oldSpaceValue)
+      ? Number(oldSpaceValue)
+      : null,
+    wasm_trap_handler_disabled: process.execArgv.includes("--disable-wasm-trap-handler"),
   };
 }
 
@@ -46,8 +52,10 @@ async function collectCapabilities({ inputPath, deniedPath, writeDirectory }) {
   return evidence;
 }
 
-function isolationFailure(evidence) {
+function runtimeControlFailure(evidence) {
   const exact = {
+    v8_old_space_mib: 512,
+    wasm_trap_handler_disabled: true,
     permission_type: "object",
     allowed_read_capability: true,
     denied_read_capability: false,
@@ -131,17 +139,17 @@ export async function runCanonicalRenderer(argv, dependencies = defaultDependenc
   } catch {
     dependencies.emit({
       ...identity,
-      render_status: "isolation_failure",
-      isolation_failure: "probe_exception",
+      render_status: "runtime_control_failure",
+      runtime_control_failure: "probe_exception",
     });
     return 1;
   }
-  const failure = isolationFailure(capabilities);
+  const failure = runtimeControlFailure({ ...identity, ...capabilities });
   if (failure !== null) {
     dependencies.emit({
       ...identity,
-      render_status: "isolation_failure",
-      isolation_failure: failure,
+      render_status: "runtime_control_failure",
+      runtime_control_failure: failure,
     });
     return 1;
   }

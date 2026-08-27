@@ -1,6 +1,6 @@
 {
-  "lock_version": 1,
-  "acceptance_model_version": "1.0.2",
+  "lock_version": 2,
+  "acceptance_model_version": "1.0.3",
   "node_version": "22.14.0",
   "node_binaries": {
     "darwin-arm64": {
@@ -22,7 +22,7 @@
   "loader_file": "node_modules/@resvg/resvg-wasm/index.mjs",
   "loader_sha256": "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1",
   "runner_file": "scripts/render_svg.mjs",
-  "runner_sha256": "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c77835290d693ee16a",
+  "runner_sha256": "11b08e3fda461c2cc2bd7f03bbf6e0d21bcaf634e2d0ad0626cd71e0921b1af1",
   "wasm_file": "node_modules/@resvg/resvg-wasm/index_bg.wasm",
   "wasm_sha256": "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70",
   "license": "MPL-2.0",
@@ -32,7 +32,11 @@
     "current_color": "#000000",
     "font_load_system_fonts": false,
     "shape_rendering": 2,
-    "text_rendering": 2,
-    "disable_wasm_trap_handler": true
+    "text_rendering": 2
+  },
+  "resource_controls": {
+    "wall_timeout_seconds": 15,
+    "v8_old_space_mib": 512,
+    "wasm_trap_handler_disabled": true
   }
 }

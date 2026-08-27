@@ -55,7 +55,7 @@ Before any output write or reconstruction tool call, the skill asks exactly:
 > Подтвердите 98% или укажите другое значение.
 
 Even if the request already names a value, it must be confirmed. The value is
-a threshold on acceptance model `1.0.2`, not a percentage of identical pixels.
+a threshold on acceptance model `1.0.3`, not a percentage of identical pixels.
 
 ## How the skill works
 
@@ -89,8 +89,9 @@ candidate meets the confirmed target.
    px, and never change the target, tolerances, frozen map, or uncertainty to
    obtain acceptance.
 7. **Report the real status.** Canonical acceptance requires the locked
-   renderer, its isolation, the unrounded composite score, and every mandatory
-   gate. Preview-only evaluation is labelled `preview score` with status
+   renderer, its scoped runtime and Permission Model controls, the unrounded
+   composite score, and every mandatory gate. Preview-only evaluation is
+   labelled `preview score` with status
    `non_canonical`; a failed or stalled reconstruction remains `not_accepted`
    or `incomplete` with the remaining differences listed.
 
@@ -221,7 +222,7 @@ See `references/reconstruction-workflow.md` for the complete workflow,
 - an honest status: `accepted`, `not_accepted`, `incomplete`,
   `non_canonical`, `invalid_input`, or `runtime_error` as applicable.
 
-The final wording is a score such as “98.12/100 under acceptance model 1.0.2
+The final wording is a score such as “98.12/100 under acceptance model 1.0.3
 at target 98/100.” A high score never overrides a failed hard gate.
 
 ## Release archive
@@ -251,14 +252,21 @@ harness provenance; reusable scenario prompts remain in the archive.
   `accepted`.
 - Baseline plus at most eight refinements is the default; stalled or exhausted
   runs stop without lowering the target or tolerances.
-- Canonical acceptance requires the locked renderer and supported isolation.
+- Canonical acceptance requires the locked renderer, exact runtime flags, and
+  supported Permission Model capabilities. The `512 MiB` control is V8
+  old-space only, not a hard RSS, total-memory, or VA ceiling; optional external
+  cgroup or platform confinement is defense in depth, not acceptance authority.
 - Node `22.14.0` does not provide a network permission scope. The canonical
   runner therefore imports no network module, initializes the pinned loader
   from already-read WASM bytes, and rejects external SVG resources, but the
   contract does not claim OS-level network denial.
-- Publication readiness is **BLOCKED** until the mandatory live Ubuntu x64
-  canonical CI job completes with zero skips; see
+- Publication readiness is **BLOCKED** until the mandatory live Ubuntu x64 and
+  macOS 15 arm64 canonical CI jobs complete with zero skips; see
   `docs/releases/v0.1.0.md` for the explicit verification boundary.
+- Native local Darwin arm64 canonical execution is **VERIFIED** on 2026-08-27
+  with all nine cases passing twice. The post-push macOS CI record remains
+  **UNVERIFIED**, and Linux x64 GREEN remains **UNVERIFIED**; both CI records
+  remain publication blockers.
 - No GitHub remote, tag, release, or package publication is created by these
   files.
 

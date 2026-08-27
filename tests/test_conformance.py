@@ -1,4 +1,4 @@
-"""Independent conformance and adversarial checks for acceptance model 1.0.2."""
+"""Independent conformance and adversarial checks for acceptance model 1.0.3."""
 
 from __future__ import annotations
 
@@ -57,11 +57,11 @@ FIXTURES = REPOSITORY / "tests" / "fixtures"
 CONFORMANCE = FIXTURES / "conformance"
 CONTRACTS = FIXTURES / "contracts"
 SECURITY = FIXTURES / "security"
-GOLDEN = REPOSITORY / "tests" / "goldens" / "acceptance-model-1.0.2.json"
+GOLDEN = REPOSITORY / "tests" / "goldens" / "acceptance-model-1.0.3.json"
 FIXED_TIME = "2026-08-26T12:00:00Z"
 PINNED_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
 PINNED_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
-PINNED_RUNNER_SHA256 = "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c77835290d693ee16a"
+PINNED_RUNNER_SHA256 = "11b08e3fda461c2cc2bd7f03bbf6e0d21bcaf634e2d0ad0626cd71e0921b1af1"
 
 
 @dataclass(frozen=True)
@@ -365,6 +365,15 @@ def _verify_test_renderer_contract() -> tuple[Path, Path, Path, Path]:
         raise AssertionError(f"pinned test renderer hash mismatch: {', '.join(mismatches)}")
     lock_document = _read_json(REPOSITORY / "canonical-renderer.lock")
     if (
+        lock_document.get("lock_version") != 2
+        or lock_document.get("acceptance_model_version") != "1.0.3"
+        or lock_document.get("resource_controls")
+        != {
+            "wall_timeout_seconds": 15,
+            "v8_old_space_mib": 512,
+            "wasm_trap_handler_disabled": True,
+        }
+        or
         lock_document.get("node_version") != "22.14.0"
         or lock_document.get("package_version") != "2.6.2"
         or lock_document.get("render_options")
@@ -375,7 +384,6 @@ def _verify_test_renderer_contract() -> tuple[Path, Path, Path, Path]:
             "font_load_system_fonts": False,
             "shape_rendering": 2,
             "text_rendering": 2,
-            "disable_wasm_trap_handler": True,
         }
     ):
         raise AssertionError("canonical-renderer.lock does not match the test render contract")
@@ -593,7 +601,7 @@ def _normalized_bytes(report: dict[str, object]) -> bytes:
 def _golden() -> dict[str, object]:
     if not GOLDEN.is_file():
         raise AssertionError(
-            "missing independently checked golden: tests/goldens/acceptance-model-1.0.2.json"
+            "missing independently checked golden: tests/goldens/acceptance-model-1.0.3.json"
         )
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}
@@ -733,7 +741,6 @@ CANONICAL_CASE_NAMES = (
     "ring-hole",
     "widescreen-16x9",
 )
-CANONICAL_DARWIN_SKIP = "production canonical isolation unavailable"
 
 
 def _canonical_platform_skip_reason(
@@ -741,10 +748,10 @@ def _canonical_platform_skip_reason(
 ) -> str | None:
     selected_system = sys.platform if system is None else system
     selected_architecture = platform.machine().lower() if architecture is None else architecture.lower()
-    if selected_system == "linux" and selected_architecture == "x86_64":
+    if selected_system == "linux" and selected_architecture in {"x86_64", "amd64"}:
         return None
-    if selected_system == "darwin":
-        return CANONICAL_DARWIN_SKIP
+    if selected_system == "darwin" and selected_architecture in {"arm64", "aarch64"}:
+        return None
     raise AssertionError(
         f"canonical-platform conformance has no supported contract for "
         f"{selected_system}-{selected_architecture}"
@@ -1025,6 +1032,20 @@ class PipelineCorpusTests(unittest.TestCase):
                 "executable_sha256": "1abce2374a485bddae3c27b17a3e3143e2780232026e627c4fe74ddde3f380a1",
             },
         )
+        self.assertEqual(
+            renderer_lock["node_binaries"]["darwin-arm64"]["executable_sha256"],
+            "e2d4915d03eda6a2f00a09920e7eeb7a04ad123f9aaad61b1481179fe1bf50e0",
+        )
+        self.assertEqual(renderer_lock["runner_sha256"], PINNED_RUNNER_SHA256)
+        self.assertEqual(
+            renderer_lock["resource_controls"],
+            {
+                "wall_timeout_seconds": 15,
+                "v8_old_space_mib": 512,
+                "wasm_trap_handler_disabled": True,
+            },
+        )
+        self.assertNotIn("disable_wasm_trap_handler", renderer_lock["render_options"])
 
     def test_pixel_oracle_never_publishes_canonical_acceptance_evidence(self) -> None:
         case = CONFORMANCE / "analytic-fill"
@@ -1046,34 +1067,6 @@ class PipelineCorpusTests(unittest.TestCase):
         self.assertFalse(records[0]["production_canonical_environment"])
         self.assertNotIn(b'"canonical_environment":true', record_bytes)
         self.assertFalse(acceptance_evaluation_exists)
-
-    @unittest.skipUnless(sys.platform == "darwin", "Darwin fail-closed contract")
-    def test_production_pipeline_is_noncanonical_on_unisolated_darwin(self) -> None:
-        case = CONFORMANCE / "analytic-fill"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            prepare_reference(case / "source.png", case / "draft.json", root / "reference")
-            with (
-                mock.patch.dict(os.environ, {}, clear=True),
-                mock.patch.object(pipeline_module, "_utc_now", return_value=FIXED_TIME),
-            ):
-                summary = evaluate_candidate(
-                    root / "reference" / "reconstruction-map-r01.json",
-                    case / "candidate.svg",
-                    0,
-                    root / "production-run",
-                )
-            evaluation_path = root / "production-run" / "evaluation-i00.json"
-            evaluation_bytes = evaluation_path.read_bytes()
-            report = json.loads(evaluation_bytes)["report"]
-            preview_exists = (root / "production-run" / "preview-i00.png").exists()
-
-        self.assertEqual(summary["status"], Status.NON_CANONICAL.value)
-        self.assertEqual(summary["exit_code"], int(ExitCode.NON_CANONICAL))
-        self.assertEqual(report["status"], Status.NON_CANONICAL.value)
-        self.assertFalse(report["canonical_environment"])
-        self.assertNotIn(b'"canonical_environment":true', evaluation_bytes)
-        self.assertFalse(preview_exists)
 
     def test_positive_renderer_contract_changes_when_candidate_geometry_changes(self) -> None:
         case = CONFORMANCE / "analytic-fill"
@@ -1125,16 +1118,15 @@ class PipelineCorpusTests(unittest.TestCase):
                 self.assertIn(expected["status"], {status.value for status in Status})
                 self.assertIn("stop_reason", expected)
 
-    def test_canonical_suite_lists_all_cases_and_is_mandatory_on_linux_x64(self) -> None:
+    def test_canonical_suite_lists_all_cases_and_is_mandatory_on_supported_platforms(self) -> None:
         manifest = _read_json(CONFORMANCE / "manifest.json")
         manifest_names = tuple(sorted(str(item["name"]) for item in manifest["pipeline_cases"]))
         self.assertEqual(CANONICAL_CASE_NAMES, manifest_names)
         self.assertIsNone(
             _canonical_platform_skip_reason(system="linux", architecture="x86_64")
         )
-        self.assertEqual(
-            _canonical_platform_skip_reason(system="darwin", architecture="arm64"),
-            CANONICAL_DARWIN_SKIP,
+        self.assertIsNone(
+            _canonical_platform_skip_reason(system="darwin", architecture="arm64")
         )
         self.assertTrue(
             issubclass(CanonicalPlatformConformanceTests, unittest.TestCase)

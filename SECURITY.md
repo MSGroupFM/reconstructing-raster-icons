@@ -15,14 +15,19 @@ The implementation therefore:
 - rejects network/data resources, scripts, fonts, filters, animation, raster
   embedding, transforms, and unsupported XML features;
 - bounds raster/SVG size, image dimensions, element count, path data, nesting,
-  time, and memory where canonical isolation supports it;
+  parent wall time, and V8 old-space. The old-space setting is not a hard RSS,
+  total-memory, or virtual-address-space ceiling;
 - verifies Node, package, loader, WASM, and runner identities against
   `canonical-renderer.lock`;
 - uses the Node `22.14.0` Permission Model for filesystem, child-process, and
   worker restrictions without claiming a network permission that this runtime
   does not implement; the pinned runner has no network import, initializes the
   loader from already-read WASM bytes, and rejects external SVG resources;
-- fails closed as `non_canonical` if required isolation cannot be proven;
+- treats those Permission Model checks as seat belts around trusted,
+  hash-pinned Node and runner code, not as a malicious-code sandbox or a
+  containment boundary for a compromised dependency;
+- fails closed as `non_canonical` if the exact runtime, Permission Model
+  capabilities, child-observed V8 flags, or parent timeout cannot be proven;
 - writes immutable stage artifacts and uses logical IDs plus SHA-256 evidence;
 - builds releases without symlinks or local paths and validates traversal-safe
   extraction before reporting success.
@@ -34,8 +39,11 @@ The precise limits and accepted SVG subset are documented in
 
 Security fixes are prepared for the `0.1.x` line. Version `0.1.0` is currently
 a local release candidate. Publication readiness remains blocked pending the
-mandatory live Ubuntu x64 canonical zero-skip CI run. This is not a claim that
-a public release or support service exists.
+mandatory live Ubuntu x64 and macOS 15 arm64 canonical zero-skip CI runs.
+Native local Darwin arm64 canonical execution is **VERIFIED** on 2026-08-27:
+all nine cases passed twice. The post-push macOS CI record remains
+**UNVERIFIED**, and Linux x64 GREEN remains **UNVERIFIED**. This is not a claim
+that a public release or support service exists.
 
 ## Reporting a vulnerability
 

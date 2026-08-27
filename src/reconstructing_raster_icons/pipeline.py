@@ -1,4 +1,4 @@
-"""Immutable prepare, evaluate, and finalize stages for acceptance model 1.0.2."""
+"""Immutable prepare, evaluate, and finalize stages for acceptance model 1.0.3."""
 
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ from .metrics import (
     contour_score,
     silhouette_score,
     topology_score,
+    visible_component_mask,
 )
 from .raster import (
     FrozenPlacement,
@@ -60,6 +61,7 @@ from .renderer import (
     CANONICAL_NPM_INTEGRITY,
     CANONICAL_PACKAGE,
     CANONICAL_PACKAGE_VERSION,
+    CANONICAL_RUNNER_SHA256,
     CANONICAL_WASM_SHA256,
     RenderResult,
     render_canonical,
@@ -712,6 +714,12 @@ def _canonical_renderer_report() -> dict[str, object]:
         "npm_integrity": CANONICAL_NPM_INTEGRITY,
         "wasm_sha256": CANONICAL_WASM_SHA256,
         "loader_sha256": CANONICAL_LOADER_SHA256,
+        "runner_sha256": CANONICAL_RUNNER_SHA256,
+        "resource_controls": {
+            "wall_timeout_seconds": 15,
+            "v8_old_space_mib": 512,
+            "wasm_trap_handler_disabled": True,
+        },
         "profile": {
             "color_space": "sRGB",
             "background": "transparent",
@@ -736,6 +744,32 @@ def _render_mask(payload: bytes, size: tuple[int, int]) -> NDArray[np.bool_]:
         raise
     except (OSError, UnidentifiedImageError) as error:
         raise InvalidInputError("renderer output is not a valid RGBA PNG") from error
+
+
+def _render_visible_component_mask(payload: bytes, size: tuple[int, int]) -> NDArray[np.bool_]:
+    """Extract the selected white diagnostic component, excluding black occluders."""
+    try:
+        with Image.open(BytesIO(payload)) as image:
+            image.load()
+            if image.size != size or image.mode != "RGBA":
+                raise InvalidInputError("renderer output has the wrong size or mode")
+            rgba = np.asarray(image, dtype=np.float64) / np.float64(255.0)
+    except InvalidInputError:
+        raise
+    except (OSError, UnidentifiedImageError) as error:
+        raise InvalidInputError("renderer output is not a valid RGBA PNG") from error
+    rgb = rgba[..., :3]
+    linear = np.where(
+        rgb <= np.float64(0.04045),
+        rgb / np.float64(12.92),
+        ((rgb + np.float64(0.055)) / np.float64(1.055)) ** np.float64(2.4),
+    )
+    luminance = (
+        np.float64(0.2126) * linear[..., 0]
+        + np.float64(0.7152) * linear[..., 1]
+        + np.float64(0.0722) * linear[..., 2]
+    )
+    return visible_component_mask(rgba[..., 3], luminance)
 
 
 def _comparison_png(reference: NDArray[np.bool_], candidate: NDArray[np.bool_], *, diff: bool) -> bytes:
@@ -764,30 +798,29 @@ def _paint_variant(
     isolated: bool,
 ) -> bytes:
     root = copy.deepcopy(document.root)
-    id_to_component = {str(item["svg_id"]): str(item["component_id"]) for item in components}
-    selected_svg_id = next(
-        str(item["svg_id"]) for item in components if str(item["component_id"]) == selected_id
-    )
-    located = False
-    for element in root.iter():
-        element_id = element.attrib.get("id")
-        if element_id not in id_to_component:
-            continue
-        located = located or element_id == selected_svg_id
-        selected = element_id == selected_svg_id
+    roots = {
+        element.attrib["id"]: element
+        for element in root.iter()
+        if "id" in element.attrib
+    }
+    for component in components:
+        component_id = str(component["component_id"])
+        svg_id = str(component["svg_id"])
+        element = roots.get(svg_id)
+        if element is None:
+            raise InvalidInputError(f"mandatory SVG component {svg_id!r} is missing")
+        selected = component_id == selected_id
         color = "#ffffff" if selected else ("none" if isolated else "#000000")
-        element_name = _local_name(element.tag)
-        paint_type = next(
-            str(item["paint_type"]) for item in components if str(item["svg_id"]) == element_id
-        )
-        if paint_type in {"fill", "mixed"} or element_name in {"g", "path", "rect", "circle", "ellipse", "polygon"}:
-            if element.attrib.get("fill") != "none" or paint_type in {"fill", "mixed"}:
-                element.set("fill", color)
-        if paint_type in {"stroke", "mixed"} or "stroke" in element.attrib:
-            if element.attrib.get("stroke") != "none" or paint_type in {"stroke", "mixed"}:
-                element.set("stroke", color)
-    if not located:
-        raise InvalidInputError(f"mandatory SVG component {selected_svg_id!r} is missing")
+        paint_type = str(component["paint_type"])
+        for descendant in element.iter():
+            if descendant.attrib.get("fill") != "none" and (
+                "fill" in descendant.attrib or paint_type in {"fill", "mixed"}
+            ):
+                descendant.set("fill", color)
+            if descendant.attrib.get("stroke") != "none" and (
+                "stroke" in descendant.attrib or paint_type in {"stroke", "mixed"}
+            ):
+                descendant.set("stroke", color)
     ElementTree.register_namespace("", SVG_NAMESPACE)
     return ElementTree.tostring(root, encoding="utf-8", xml_declaration=False)
 
@@ -818,7 +851,7 @@ def _default_diagnostics(
                 raise RuntimeError(
                     result.diagnostic or f"{kind} component diagnostic render was non-canonical"
                 )
-            destination[component_id] = _render_mask(result.png_bytes, size)
+            destination[component_id] = _render_visible_component_mask(result.png_bytes, size)
     return {"visible": visible, "isolated": isolated}
 
 
@@ -1223,7 +1256,7 @@ def _artifact_gate(
         "kind": "automatic",
         "state": "pass" if passed else "fail",
         "evidence": {"artifact_id": logical_id, "sha256": digest},
-        "evaluator": "acceptance-model-1.0.2",
+        "evaluator": "acceptance-model-1.0.3",
         "evaluated_at": timestamp,
     }
 
@@ -1238,7 +1271,7 @@ def _measurement_gate(
         "evidence": {
             "basis": f"maximum measured deviation={measured:.17g}; tolerance={tolerance:.17g} canonical pixels"
         },
-        "evaluator": "acceptance-model-1.0.2",
+        "evaluator": "acceptance-model-1.0.3",
         "evaluated_at": timestamp,
     }
 

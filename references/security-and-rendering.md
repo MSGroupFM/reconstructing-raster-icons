@@ -15,29 +15,52 @@ Reject scripts, handlers, CSS/style/imports, `foreignObject`, `image`, `text`, `
 - at most `10,000` XML elements;
 - at most `2,000,000` path/points characters;
 - XML depth at most `64`;
-- renderer timeout `15 s`;
-- memory limit `512 MiB`: Linux uses `RLIMIT_AS`; Darwin uses
-  `RLIMIT_DATA` plus `RLIMIT_RSS`. Node runs with
-  `--disable-wasm-trap-handler` so V8 does not reserve its normal large
-  WebAssembly memory cage inside the Linux address-space ceiling.
+- renderer wall timeout `15 s` in the Python parent;
+- V8 old-space limit `512 MiB` through `--max-old-space-size=512`;
+- `--disable-wasm-trap-handler`, which avoids V8's separate WebAssembly
+  trap-handler virtual-address cage.
+
+The `512 MiB` value limits V8 old-space only. It is not a hard ceiling for
+resident memory (RSS), total process memory, or virtual address space (VA).
+The portable acceptance contract does not use `RLIMIT_AS`, `RLIMIT_DATA`, or
+`RLIMIT_RSS`.
+
+The superseded Linux control set `RLIMIT_AS=512 MiB`, which capped the whole
+process virtual address space. Node `22.14.0` therefore terminated before
+JavaScript while V8 reserved its CodeRange. `--disable-wasm-trap-handler`
+addresses a different reservation—the separate WebAssembly trap-handler
+virtual-address cage—and does not affect the CodeRange. Conversely,
+`--max-old-space-size=512` limits only V8 old-space. Darwin `RLIMIT_DATA` and
+`RLIMIT_RSS` do not provide an equivalent portable hard RSS or total-memory
+ceiling, so the canonical contract cannot truthfully attest one.
 
 A security or allowlist failure stops before rendering and yields `invalid_input`; do not repair and continue silently.
 
 ## Canonical renderer
 
-Acceptance model `1.0.2` requires the exact `canonical-renderer.lock`:
+Acceptance model `1.0.3` requires the exact `canonical-renderer.lock`:
 
 - Node.js `22.14.0`;
 - `@resvg/resvg-wasm@2.6.2`;
 - npm integrity `sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw==`;
 - WASM SHA-256 `22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70`;
-- loader SHA-256 `10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1`.
+- loader SHA-256 `10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1`;
+- runner SHA-256 `11b08e3fda461c2cc2bd7f03bbf6e0d21bcaf634e2d0ad0626cd71e0921b1af1`;
+- Darwin arm64 Node SHA-256 `e2d4915d03eda6a2f00a09920e7eeb7a04ad123f9aaad61b1481179fe1bf50e0`;
+- Linux x64 Node SHA-256 `1abce2374a485bddae3c27b17a3e3143e2780232026e627c4fe74ddde3f380a1`;
+- resource controls: `15 s` parent wall timeout, `512 MiB` V8 old-space,
+  and disabled WASM trap handler.
 
-Use a transparent sRGB canvas; resolve `currentColor` to black; disable system fonts; render explicit dimensions with maximum side `1024`, no background or crop, and pinned shape/text rendering options. Start Node with `--disable-wasm-trap-handler`, the [documented Node 22.14.0 mode](https://nodejs.org/download/release/v22.14.0/docs/api/cli.html#--disable-wasm-trap-handler) for WebAssembly under constrained virtual address space. Browser, Inkscape, and native librsvg output is preview-only.
+Use a transparent sRGB canvas; resolve `currentColor` to black; disable system fonts; render explicit dimensions with maximum side `1024`, no background or crop, and pinned shape/text rendering options. Start Node with `--max-old-space-size=512` and `--disable-wasm-trap-handler`. The child reports both actual `process.execArgv` settings; the parent requires the exact evidence. Browser, Inkscape, and native librsvg output is preview-only.
 
-Run the Node subprocess with read access limited to the candidate, pinned WASM/loader, runner, and unpredictable owner-only workspace. Node `22.14.0` restricts filesystem, child-process, and worker access through its Permission Model, but that version does not mediate network access. The hash-pinned runner imports no network module and initializes the pinned loader from already-read WASM bytes; the safe SVG subset rejects links and external resources before render. Canonical evidence must not claim runtime network denial. An OS network sandbox may add defense in depth, but it is not part of the cross-platform acceptance contract.
+Run the Node subprocess with read access limited to the candidate, pinned WASM/loader, runner, and unpredictable owner-only workspace. Node `22.14.0` restricts filesystem, child-process, and worker access through its Permission Model, but that version does not mediate network access. These Permission Model controls are seat belts around trusted, exact hash-pinned Node and runner code; they are not a sandbox for malicious JavaScript or a containment boundary for a compromised dependency. The runner imports no network module and initializes the pinned loader from already-read WASM bytes; the safe SVG subset rejects links and external resources before render. Canonical evidence must not claim runtime network denial, a hard RSS/VA ceiling, or general process isolation. A cgroup, container, sandbox profile, or other platform confinement may add defense in depth, but it is not acceptance authority.
 
-If hashes, Node version, permission model, file allowlist, timeout, or memory isolation cannot be proven, stop before render or report `non_canonical`; never label preview pixels accepted. See the official [Node.js 22.14 Permission Model documentation](https://nodejs.org/download/release/v22.14.0/docs/api/permissions.html) for the exact scopes available in the pinned runtime.
+If hashes, Node version, permission model, file allowlist, child-reported V8 flags, or parent timeout cannot be proven, stop before render or report `non_canonical`; never label preview pixels accepted. See the official [Node.js 22.14 Permission Model documentation](https://nodejs.org/download/release/v22.14.0/docs/api/permissions.html) for the exact scopes available in the pinned runtime.
+
+Native local Darwin arm64 canonical execution is **VERIFIED** on 2026-08-27:
+all nine canonical cases passed twice with zero skips. The required post-push
+macOS 15 arm64 CI record remains **UNVERIFIED**, and Linux x64 GREEN remains
+**UNVERIFIED**. Both live CI records are publication blockers.
 
 ## Artifacts and failures
 

@@ -1,4 +1,4 @@
-"""Hash-pinned canonical SVG rendering through the isolated resvg WASM runner."""
+"""Hash-pinned canonical SVG rendering with scoped Node runtime controls."""
 
 from __future__ import annotations
 
@@ -44,10 +44,10 @@ CANONICAL_PACKAGE_VERSION = "2.6.2"
 CANONICAL_NPM_INTEGRITY = "sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw=="
 CANONICAL_WASM_SHA256 = "22bf6e9f9a100d972da0411a69c5ba504367fc1fa87b3b64e3f35e53926d2d70"
 CANONICAL_LOADER_SHA256 = "10170d02d816f02ec76f9bc095b01d9becf536e7b1e12e5aa616652c84b237a1"
-CANONICAL_RUNNER_SHA256 = "6fbfe4d1b7b6c67aba48b7162e4c43456920325c025eb3c77835290d693ee16a"
+CANONICAL_RUNNER_SHA256 = "11b08e3fda461c2cc2bd7f03bbf6e0d21bcaf634e2d0ad0626cd71e0921b1af1"
 CANONICAL_LICENSE = "MPL-2.0"
 RENDER_TIMEOUT_SECONDS = 15
-MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
+V8_OLD_SPACE_LIMIT_MIB = 512
 MAX_CANONICAL_SIDE = 1024
 MIN_CANONICAL_SIDE = 64
 MAX_PNG_BYTES = 32 * 1024 * 1024
@@ -77,7 +77,11 @@ _RENDER_OPTIONS = {
     "font_load_system_fonts": False,
     "shape_rendering": 2,
     "text_rendering": 2,
-    "disable_wasm_trap_handler": True,
+}
+_RESOURCE_CONTROLS = {
+    "wall_timeout_seconds": RENDER_TIMEOUT_SECONDS,
+    "v8_old_space_mib": V8_OLD_SPACE_LIMIT_MIB,
+    "wasm_trap_handler_disabled": True,
 }
 
 
@@ -100,6 +104,7 @@ class RendererLock:
     wasm_sha256: str
     license: str
     render_options: dict[str, Any]
+    resource_controls: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -163,10 +168,10 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def load_renderer_lock(path: Path) -> RendererLock:
-    """Load only the exact renderer lock published for acceptance model 1.0.2."""
+    """Load only the exact renderer lock published for acceptance model 1.0.3."""
     value = _load_json(Path(path))
     expected = {
-        "lock_version": 1,
+        "lock_version": 2,
         "acceptance_model_version": ACCEPTANCE_MODEL_VERSION,
         "node_version": CANONICAL_NODE_VERSION,
         "node_binaries": CANONICAL_NODE_BINARIES,
@@ -181,6 +186,7 @@ def load_renderer_lock(path: Path) -> RendererLock:
         "wasm_sha256": CANONICAL_WASM_SHA256,
         "license": CANONICAL_LICENSE,
         "render_options": _RENDER_OPTIONS,
+        "resource_controls": _RESOURCE_CONTROLS,
     }
     if value != expected:
         differing = sorted(key for key in set(value) | set(expected) if value.get(key) != expected.get(key))
@@ -199,6 +205,7 @@ def load_renderer_lock(path: Path) -> RendererLock:
         wasm_sha256=value["wasm_sha256"],
         license=value["license"],
         render_options=dict(value["render_options"]),
+        resource_controls=dict(value["resource_controls"]),
     )
 
 
@@ -453,13 +460,13 @@ def _stage_bytes(path: Path, data: bytes, mode: int) -> None:
 def _permission_command(node: Path, read_paths: tuple[Path, ...], write_directory: Path) -> list[str]:
     command = [
         str(node),
-        "--max-old-space-size=512",
-        # V8 normally reserves a large virtual-memory cage for WebAssembly.
-        # The canonical Linux process is intentionally constrained by
-        # RLIMIT_AS, so use Node's supported low-address-space WASM mode.
-        "--disable-wasm-trap-handler",
-        "--permission",
+        f"--max-old-space-size={_RESOURCE_CONTROLS['v8_old_space_mib']}",
     ]
+    # Avoid the separate WebAssembly trap-handler cage. This is a virtual
+    # address-space optimization; it is not a total-process memory limit.
+    if _RESOURCE_CONTROLS["wasm_trap_handler_disabled"]:
+        command.append("--disable-wasm-trap-handler")
+    command.append("--permission")
     if any(write_directory not in path.parents for path in read_paths):
         raise RendererLockError("private renderer read allowlist escapes the run directory")
     command.append(f"--allow-fs-read={write_directory}")
@@ -497,10 +504,12 @@ def _validate_combined_attestation(
         evidence = json.loads(payload.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
         raise RendererLockError(_invalid_attestation_diagnostic(payload, stderr)) from error
-    identity_keys = {
+    stable_identity_keys = {
         "nonce", "exec_path", "node_version", "release_name", "platform", "architecture",
     }
-    failure_keys = identity_keys | {"render_status", "isolation_failure"}
+    resource_keys = {"v8_old_space_mib", "wasm_trap_handler_disabled"}
+    identity_keys = stable_identity_keys | resource_keys
+    failure_keys = identity_keys | {"render_status", "runtime_control_failure"}
     full_keys = identity_keys | {
         "permission_type", "allowed_read_capability", "denied_read_capability",
         "allowed_write_capability", "child_capability", "worker_capability",
@@ -513,7 +522,7 @@ def _validate_combined_attestation(
     if evidence_keys not in {frozenset(failure_keys), frozenset(full_keys)}:
         raise RendererLockError("Node renderer attestation evidence shape is invalid")
     expected_platform, expected_architecture = platform_key.split("-", 1)
-    identity = {
+    stable_identity = {
         "nonce": nonce,
         "exec_path": str(node),
         "node_version": CANONICAL_NODE_VERSION,
@@ -521,22 +530,36 @@ def _validate_combined_attestation(
         "platform": expected_platform,
         "architecture": expected_architecture,
     }
-    if any(evidence.get(key) != value for key, value in identity.items()):
+    if any(evidence.get(key) != value for key, value in stable_identity.items()):
         raise RendererLockError("Node renderer attestation runtime mismatch")
     if evidence_keys == failure_keys:
         allowed_failures = {
+            "v8_old_space_mib", "wasm_trap_handler_disabled",
             "permission_type", "allowed_read_capability", "denied_read_capability",
             "allowed_write_capability", "child_capability", "worker_capability",
             "filesystem_allowed", "filesystem_denial", "subprocess_denial", "probe_exception",
         }
-        if (
-            evidence["render_status"] != "isolation_failure"
-            or evidence["isolation_failure"] not in allowed_failures
-        ):
-            raise RendererLockError("Node renderer isolation failure evidence is invalid")
+        failure = evidence["runtime_control_failure"]
+        exact_v8 = evidence["v8_old_space_mib"] == V8_OLD_SPACE_LIMIT_MIB
+        exact_wasm = evidence["wasm_trap_handler_disabled"] is True
+        if failure == "v8_old_space_mib":
+            valid_resources = not exact_v8
+        elif failure == "wasm_trap_handler_disabled":
+            valid_resources = exact_v8 and not exact_wasm
+        else:
+            valid_resources = exact_v8 and exact_wasm
+        if evidence["render_status"] != "runtime_control_failure" or failure not in allowed_failures or not valid_resources:
+            raise RendererLockError("Node renderer runtime-control failure evidence is invalid")
         return evidence
+    if (
+        evidence["v8_old_space_mib"] != V8_OLD_SPACE_LIMIT_MIB
+        or evidence["wasm_trap_handler_disabled"] is not True
+    ):
+        raise RendererLockError("Node renderer attestation resource controls mismatch")
     exact = {
-        **identity,
+        **stable_identity,
+        "v8_old_space_mib": V8_OLD_SPACE_LIMIT_MIB,
+        "wasm_trap_handler_disabled": True,
         "permission_type": "object",
         "allowed_read_capability": True,
         "denied_read_capability": False,
@@ -555,54 +578,6 @@ def _validate_combined_attestation(
     if evidence["render_status"] == "ok" and evidence["render_error"] is not None:
         raise RendererLockError("Node renderer attestation has contradictory render evidence")
     return evidence
-
-
-def _memory_preexec() -> Any:
-    """Return a verified-in-child 512 MiB Unix process-memory limiter."""
-    if os.name != "posix":
-        raise RendererLockError("canonical renderer memory isolation requires POSIX")
-    try:
-        import resource
-
-        if sys.platform == "darwin":
-            # Darwin aliases RLIMIT_RSS and RLIMIT_AS. RLIMIT_DATA adds a
-            # distinct data-segment ceiling; both must be enforceable for a
-            # canonical run on that host.
-            limit_kinds = (resource.RLIMIT_DATA, resource.RLIMIT_RSS)
-        else:
-            limit_kinds = (resource.RLIMIT_AS,)
-    except (ImportError, AttributeError) as error:
-        raise RendererLockError("Unix process memory isolation is unavailable") from error
-
-    def set_limit() -> None:
-        exact_limit = (MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES)
-        for limit_kind in limit_kinds:
-            resource.setrlimit(limit_kind, exact_limit)
-        for limit_kind in limit_kinds:
-            if resource.getrlimit(limit_kind) != exact_limit:
-                raise OSError("process memory limit could not be verified")
-
-    return set_limit
-
-
-def _probe_memory_preexec(preexec: Any) -> None:
-    """Prove the pre-exec memory limiter works before starting any Node code."""
-    if preexec is None:
-        raise RendererLockError("Unix process memory isolation callback is unavailable")
-    try:
-        completed = subprocess.run(
-            ["/usr/bin/true"],
-            check=False,
-            capture_output=True,
-            timeout=5,
-            env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/usr/bin:/bin", "TZ": "UTC"},
-            preexec_fn=preexec,
-            start_new_session=True,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise RendererLockError("Unix process memory isolation could not be established") from error
-    if completed.returncode:
-        raise RendererLockError("Unix process memory isolation capability probe failed")
 
 
 def _failure(
@@ -725,8 +700,6 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         lock = load_renderer_lock(_LOCK_PATH)
         artifacts = _verify_install(lock, observed)
         node_source = resolve_canonical_node(lock, platform_key, observed)
-        preexec = _memory_preexec()
-        _probe_memory_preexec(preexec)
         workspace_path = Path(workspace)
         if workspace_path.is_symlink():
             raise RendererLockError("renderer workspace cannot be a symlink")
@@ -771,7 +744,6 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
             timeout=RENDER_TIMEOUT_SECONDS,
             env=_minimal_environment(node),
             cwd=run_directory,
-            preexec_fn=preexec,
             start_new_session=True,
         )
         attestation = _validate_combined_attestation(
@@ -789,7 +761,7 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         attestation["executable_mode"] = oct(0o500)
         if completed.returncode or attestation["render_status"] != "ok" or completed.stderr:
             diagnostic = (
-                attestation.get("isolation_failure")
+                attestation.get("runtime_control_failure")
                 or attestation.get("render_error")
                 or completed.stderr.decode("utf-8", "replace").strip()
             )
@@ -815,7 +787,7 @@ def render_canonical(svg: SafeSvgDocument, size: tuple[int, int], workspace: Pat
         return _failure("canonical renderer exceeded the 15 second timeout", dimensions, observed, expected, attestation)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         return _failure(
-            f"canonical isolation could not be established: {error}",
+            f"canonical runtime controls could not be established: {error}",
             dimensions,
             observed,
             expected,

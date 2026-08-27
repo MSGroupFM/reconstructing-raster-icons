@@ -99,6 +99,44 @@ jobs:
           npm ci --no-audit --no-fund
           test "$(node_modules/node/bin/node --version)" = "v22.14.0"
 
+      - name: Run canonical V8 startup gate with zero skips
+        run: >-
+          python -c 'import unittest;
+          suite = unittest.defaultTestLoader.loadTestsFromName("tests.test_renderer.RendererTests.test_linux_x64_bundled_node_v8_starts_under_canonical_old_space_contract");
+          result = unittest.TextTestRunner(verbosity=2).run(suite);
+          raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)'
+
+      - name: Run canonical Task 9 suite with zero skips
+        run: >-
+          python -c 'import unittest;
+          suite = unittest.defaultTestLoader.loadTestsFromName("tests.test_conformance.CanonicalPlatformConformanceTests");
+          result = unittest.TextTestRunner(verbosity=2).run(suite);
+          raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)'
+
+  canonical-darwin-arm64:
+    name: Canonical Darwin arm64 / Node 22.14.0
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.14.0"
+
+      - name: Require Darwin arm64 host
+        run: |
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+
+      - name: Install exact locks online
+        run: |
+          python -m pip install --require-hashes -r requirements-lock.txt
+          npm ci --no-audit --no-fund
+          test "$(node_modules/node/bin/node --version)" = "v22.14.0"
+
       - name: Run canonical Task 9 suite with zero skips
         run: >-
           python -c 'import unittest;

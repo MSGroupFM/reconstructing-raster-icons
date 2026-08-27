@@ -115,8 +115,8 @@ Retain the VTracer version, variant log, exact commands, source hash, candidate
 hashes, selected candidate, component substitutions, and postprocessing log as
 reconstruction evidence.
 
-If the locked renderer and its isolation are proven, report the canonical
-score and status from acceptance model `1.0.2`. If evaluation uses preview-only
+If the locked renderer and its scoped runtime and Permission Model controls are
+proven, report the canonical score and status from acceptance model `1.0.3`. If evaluation uses preview-only
 pixels, label the number exactly as a `preview score`, report status
 `non_canonical`, and never say `accepted` even when the preview score reaches
 the target.

@@ -3,7 +3,7 @@ import { runCanonicalRenderer } from "../../../scripts/render_svg.mjs";
 
 const [mode, temporaryDirectory] = process.argv.slice(2);
 if (!mode || !temporaryDirectory) {
-  throw new Error("usage: runner_isolation_harness.mjs MODE TEMPORARY_DIRECTORY");
+  throw new Error("usage: runner_runtime_controls_harness.mjs MODE TEMPORARY_DIRECTORY");
 }
 
 const outputPath = `${temporaryDirectory}/render.png`;
@@ -37,9 +37,12 @@ const dependencies = {
       throw new Error("synthetic probe exception");
     }
     const evidence = { ...baseline };
+    if (mode === "v8_old_space_mib" || mode === "wasm_trap_handler_disabled") {
+      return evidence;
+    }
     const mutation = mutations[mode];
     if (!mutation) {
-      throw new Error(`unknown isolation mode ${mode}`);
+      throw new Error(`unknown runtime-control mode ${mode}`);
     }
     evidence[mutation[0]] = mutation[1];
     return evidence;
@@ -61,7 +64,7 @@ const result = await runCanonicalRenderer(
     `${temporaryDirectory}/index_bg.wasm`,
     "128",
     "128",
-    "runner-isolation-test-nonce",
+    "runner-runtime-controls-test-nonce",
     `${temporaryDirectory}/denied`,
   ],
   dependencies,

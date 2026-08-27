@@ -12,6 +12,7 @@ import threading
 import unittest
 import sys
 from unittest import mock
+from xml.etree import ElementTree
 
 import numpy as np
 from PIL import Image
@@ -315,6 +316,36 @@ class PrepareReferenceTests(unittest.TestCase):
 
 
 class EvaluateCandidateTests(unittest.TestCase):
+    def test_diagnostic_component_mask_uses_luminance_not_alpha_union(self) -> None:
+        rgba = np.array([[[255, 255, 255, 255], [0, 0, 0, 255]]], dtype=np.uint8)
+        output = BytesIO()
+        Image.fromarray(rgba, mode="RGBA").save(output, format="PNG")
+
+        mask = pipeline_module._render_visible_component_mask(output.getvalue(), (2, 1))
+
+        np.testing.assert_array_equal(mask, np.array([[True, False]], dtype=bool))
+
+    def test_diagnostic_variant_recolors_explicit_paint_in_component_subtrees(self) -> None:
+        document = pipeline_module._validate_svg_snapshot(
+            b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+            b'<g id="selected"><rect x="4" y="4" width="8" height="8" fill="currentColor"/></g>'
+            b'<g id="occluder"><path d="M20 20H28V28H20Z" fill="currentColor"/></g>'
+            b'</svg>'
+        )
+        components = (
+            {"component_id": "selected", "svg_id": "selected", "paint_type": "fill"},
+            {"component_id": "occluder", "svg_id": "occluder", "paint_type": "fill"},
+        )
+
+        payload = pipeline_module._paint_variant(
+            document, components, "selected", isolated=False
+        )
+        root = ElementTree.fromstring(payload)
+        children = {element.tag.rsplit("}", 1)[-1]: element for element in root.iter()}
+
+        self.assertEqual(children["rect"].attrib["fill"], "#ffffff")
+        self.assertEqual(children["path"].attrib["fill"], "#000000")
+
     def test_reversed_top_level_candidate_layers_fail_paint_order_gate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

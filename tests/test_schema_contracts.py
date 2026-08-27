@@ -434,6 +434,16 @@ class SchemaContractTests(unittest.TestCase):
         with self.assertRaises(jsonschema.ValidationError):
             validate_document(report, "acceptance-report")
 
+        report = accepted_report_fixture()
+        report["canonical_renderer"]["runner_sha256"] = "f" * 64  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
+        report = accepted_report_fixture()
+        report["canonical_renderer"]["resource_controls"]["v8_old_space_mib"] = 511  # type: ignore[index]
+        with self.assertRaises(jsonschema.ValidationError):
+            validate_document(report, "acceptance-report")
+
     def test_canvas_relationships_are_enforced(self) -> None:
         for make_document, schema_name in (
             (draft_fixture, "reconstruction-map-draft"),

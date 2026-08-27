@@ -119,7 +119,7 @@ tests/fixtures/contracts/valid-map.json
 tests/fixtures/contracts/valid-semantic-review.json
 tests/fixtures/raster/transparent-square.png
 tests/fixtures/renderer/landscape.svg
-tests/fixtures/renderer/runner_isolation_harness.mjs
+tests/fixtures/renderer/runner_runtime_controls_harness.mjs
 tests/fixtures/renderer/square.svg
 tests/fixtures/security/decompression-bomb.png
 tests/fixtures/security/doctype.svg
@@ -128,7 +128,7 @@ tests/fixtures/security/external-image.svg
 tests/fixtures/security/oversize-side.png
 tests/fixtures/security/processing-instruction.svg
 tests/fixtures/security/script.svg
-tests/goldens/acceptance-model-1.0.2.json
+tests/goldens/acceptance-model-1.0.3.json
 tests/test_cli.py
 tests/test_component_metrics.py
 tests/test_conformance.py

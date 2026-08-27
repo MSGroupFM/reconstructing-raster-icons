@@ -15,13 +15,26 @@ and this project uses semantic versioning.
   alternate-tracer fallbacks are prohibited.
 - Reports now explicitly distinguish a preview score from canonical acceptance
   and require target-size review at 128, 64, 32, and 24 px.
-- Acceptance model `1.0.2` updates canonical renderer attestation to match the actual Node `22.14.0`
+- Acceptance model `1.0.3` updates canonical renderer attestation to match the actual Node `22.14.0`
   Permission Model. The runner no longer performs an unsupported network probe,
   and conformance failures report non-canonical evidence before checking PNG
   artifacts.
-- Canonical Node starts with `--disable-wasm-trap-handler`, preventing V8's
-  WebAssembly memory cage from colliding with the Linux `512 MiB` address-space
-  limit. Invalid startup attestations now retain bounded stderr diagnostics.
+- Canonical resource controls are separated from render semantics: a `15 s`
+  parent wall timeout, `512 MiB` V8 old-space limit, and child-attested
+  `--disable-wasm-trap-handler`. The contract no longer claims a hard RSS,
+  total-memory, or virtual-address-space ceiling; external platform confinement
+  remains optional defense in depth.
+- The previous Linux `RLIMIT_AS=512 MiB` control bounded the process's total
+  virtual address space, so Node `22.14.0` terminated before JavaScript while
+  reserving its V8 CodeRange. Disabling the WASM trap handler only avoids a
+  separate WebAssembly virtual-address cage, while `--max-old-space-size=512`
+  limits V8 old-space alone. Darwin `RLIMIT_DATA` and `RLIMIT_RSS` do not supply
+  an equivalent portable hard cap, so none of these OS rlimits is acceptance
+  authority in model `1.0.3`.
+- Production component diagnostics now extract the selected white component
+  with alpha plus relative luminance and recolor explicit fill/stroke throughout
+  component subtrees, so black occluders do not contaminate layout, topology,
+  or mandatory-component gates.
 - GitHub Actions now exposes the repository's `src` layout explicitly instead
   of relying on test import order.
 - README now documents the complete workflow and includes real phone and
@@ -31,12 +44,12 @@ and this project uses semantic versioning.
 
 This release candidate is prepared locally and has not been tagged, pushed,
 or published. Publication readiness is blocked pending the mandatory live
-Ubuntu x64 canonical zero-skip CI run.
+Ubuntu x64 and macOS 15 arm64 canonical zero-skip CI runs.
 
 ### Added
 
 - Accuracy confirmation before any reconstruction write, with `98/100` as the
-  proposed default on composite acceptance model `1.0.2`.
+  proposed default on composite acceptance model `1.0.3`.
 - Monochrome reconstruction workflow with frozen maps, reference masks,
   component inventory, analytical/organic geometry guidance, eight-refinement
   limit, and stall detection.
@@ -62,7 +75,8 @@ Ubuntu x64 canonical zero-skip CI run.
 - A clean Python `3.11.16` environment installed `requirements-lock.txt` with
   `--require-hashes`, and online host `npm ci --no-audit --no-fund` completed
   with the locked Node `22.14.0` and WASM artifacts verified.
-- Live Ubuntu Linux-x64 canonical execution remains explicitly **UNVERIFIED**
-  and mandatory with zero skips before publication readiness. Its CI job must
-  run online `npm ci` independently; a host installation and the committed CI
-  definition do not count as Linux execution evidence.
+- Native local Darwin arm64 canonical execution is **VERIFIED** on 2026-08-27:
+  all nine cases passed twice with zero skips. The post-push macOS 15 arm64 CI
+  record remains **UNVERIFIED**, and Linux x64 GREEN remains **UNVERIFIED**.
+  Both live CI records are mandatory publication blockers and must provision
+  dependencies independently.

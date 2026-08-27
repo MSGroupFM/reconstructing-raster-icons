@@ -6,7 +6,7 @@ from enum import Enum, IntEnum
 
 
 SCHEMA_VERSION = "1.0.0"
-ACCEPTANCE_MODEL_VERSION = "1.0.2"
+ACCEPTANCE_MODEL_VERSION = "1.0.3"
 SCHEMA_KINDS = frozenset(
     {
         "reconstruction-map-draft",

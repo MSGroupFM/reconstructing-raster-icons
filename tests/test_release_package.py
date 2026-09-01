@@ -19,7 +19,7 @@ import zipfile
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 BUILDER = REPOSITORY / "scripts" / "build_release.py"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 ARCHIVE_NAME = f"reconstructing-raster-icons-v{VERSION}.zip"
 
 
@@ -96,7 +96,7 @@ class ReleasePackageTests(unittest.TestCase):
             with zipfile.ZipFile(first_zip) as archive:
                 infos = archive.infolist()
                 names = [info.filename for info in infos]
-                self.assertEqual(len(names), 146)
+                self.assertEqual(len(names), 148)
                 self.assertEqual(
                     names,
                     (REPOSITORY / "release-manifest.txt").read_text(encoding="utf-8").splitlines(),
@@ -123,6 +123,7 @@ class ReleasePackageTests(unittest.TestCase):
                     "docs/examples/vintage-phone-vtracer.png",
                     "docs/provenance.md",
                     "docs/releases/v0.1.0.md",
+                    "docs/releases/v0.2.0.md",
                     "package-lock.json",
                     "package.json",
                     "pyproject.toml",
@@ -137,6 +138,7 @@ class ReleasePackageTests(unittest.TestCase):
                     "scripts/validate_skill.py",
                     "src/reconstructing_raster_icons/pipeline.py",
                     "tests/goldens/acceptance-model-1.0.3.json",
+                    "tests/test_python_support.py",
                     "tests/test_release_package.py",
                     "tests/test_vtracer_workflow_contract.py",
                     "references/vtracer-workflow.md",

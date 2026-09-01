@@ -3,7 +3,17 @@
 All notable changes are recorded here. The format follows Keep a Changelog,
 and this project uses semantic versioning.
 
-## Unreleased
+## 0.2.0 — Unreleased
+
+### Added
+
+- Standard GIL-enabled CPython `3.14` is now an officially supported portable
+  runtime alongside `3.11`–`3.13`. Package metadata accepts the new minor
+  release, the locked
+  dependency graph retains hash verification, and the Ubuntu CI matrix runs
+  the complete portable suite and deterministic release build on Python
+  `3.14`. The canonical renderer, acceptance model `1.0.3`, VTracer-first
+  workflow, monochrome scope, schemas, fixtures, and goldens are unchanged.
 
 ## 0.1.0 — 2026-08-28
 

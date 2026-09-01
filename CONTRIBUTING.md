@@ -2,14 +2,15 @@
 
 Contributions must preserve the deterministic acceptance contract, immutable
 artifact lifecycle, fail-closed renderer boundary, and monochrome scope of
-`0.1.x`.
+`0.2.x`.
 
 ## Development setup
 
-Use Python 3.11–3.13 and the exact dependency graphs:
+Use standard GIL-enabled CPython 3.11–3.14 and the exact dependency graphs.
+Free-threaded `t` builds are outside the tested contract:
 
 ```bash
-python3.11 -m venv .venv
+python3.14 -m venv .venv
 .venv/bin/python -m pip install --require-hashes -r requirements-lock.txt
 npm ci --no-audit --no-fund
 ```
@@ -47,7 +48,7 @@ python scripts/validate_schemas.py --schemas schemas \
   --documents tests/fixtures/contracts/valid-*.json
 python scripts/validate_skill.py --path .
 python scripts/build_release.py \
-  --source . --output /path/to/release-output --version 0.1.0
+  --source . --output /path/to/release-output --version 0.2.0
 git diff --check
 ```
 

@@ -16,6 +16,7 @@ docs/examples/vintage-phone-before.png
 docs/examples/vintage-phone-vtracer.png
 docs/provenance.md
 docs/releases/v0.1.0.md
+docs/releases/v0.2.0.md
 package-lock.json
 package.json
 pyproject.toml
@@ -137,6 +138,7 @@ tests/test_metrics.py
 tests/test_morphology.py
 tests/test_path_geometry.py
 tests/test_pipeline.py
+tests/test_python_support.py
 tests/test_raster_normalization.py
 tests/test_release_package.py
 tests/test_renderer.py

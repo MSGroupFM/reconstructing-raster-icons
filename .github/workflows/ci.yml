@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -44,6 +44,7 @@ jobs:
           tests.test_morphology
           tests.test_path_geometry
           tests.test_pipeline
+          tests.test_python_support
           tests.test_raster_normalization
           tests.test_release_package
           tests.test_renderer
@@ -78,7 +79,7 @@ jobs:
           python scripts/build_release.py
           --source .
           --output "${RUNNER_TEMP}/release-${{ matrix.python-version }}"
-          --version 0.1.0
+          --version 0.2.0
 
   canonical-linux-x64:
     name: Canonical Linux x64 / Node 22.14.0

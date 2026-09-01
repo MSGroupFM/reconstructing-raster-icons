@@ -7,7 +7,7 @@ source-evidenced circle, ellipse, and straight-segment corrections, renders the
 candidate with a hash-pinned WASM renderer, and reports a composite fidelity
 score plus blocking automatic and semantic gates.
 
-Version `0.1.0` supports monochrome icons only: one opaque foreground
+Version `0.2.0` supports monochrome icons only: one opaque foreground
 color on a transparent background. Meaningful multicolor, gradients,
 intentional translucency, photographs, and painterly images require a declared
 analysis/user scope decision and stop for its required confirmation instead of
@@ -16,7 +16,8 @@ does not claim automatic semantic color detection.
 
 ## Requirements
 
-- Python `3.11`, `3.12`, or `3.13`;
+- standard GIL-enabled CPython `3.11`, `3.12`, `3.13`, or `3.14` (the
+  free-threaded `t` builds are not part of the tested contract);
 - Node.js `22.14.0` for dependency installation;
 - the exact npm graph in `package-lock.json`, including
   `@resvg/resvg-wasm@2.6.2` and the platform-pinned Node binary;
@@ -36,7 +37,7 @@ Extract the archive into a dedicated directory, then install the locked
 dependencies:
 
 ```bash
-python3.11 -m venv .venv
+python3.14 -m venv .venv
 .venv/bin/python -m pip install --require-hashes -r requirements-lock.txt
 npm ci --no-audit --no-fund
 ```
@@ -234,7 +235,7 @@ Build the deterministic ZIP and adjacent checksum outside the source tree:
 
 ```bash
 python scripts/build_release.py \
-  --source . --output /path/to/release-output --version 0.1.0
+  --source . --output /path/to/release-output --version 0.2.0
 ```
 
 The builder reads only the exact paths in the committed
@@ -248,7 +249,7 @@ harness provenance; reusable scenario prompts remain in the archive.
 
 ## Current limitations
 
-- Reconstruction is monochrome-only in `0.1.0`.
+- Reconstruction is monochrome-only in `0.2.0`.
 - Candidate generation requires VTracer; no manual or alternate-tracer fallback
   is part of this workflow.
 - Semantic gates require human review; `not_evaluated` cannot become
@@ -263,14 +264,14 @@ harness provenance; reusable scenario prompts remain in the archive.
   runner therefore imports no network module, initializes the pinned loader
   from already-read WASM bytes, and rejects external SVG resources, but the
   contract does not claim OS-level network denial.
-- Publication readiness is **BLOCKED** until the mandatory live Ubuntu x64 and
-  macOS 15 arm64 canonical CI jobs complete with zero skips; see
-  `docs/releases/v0.1.0.md` for the explicit verification boundary.
-- Native local Darwin arm64 canonical execution is **VERIFIED** on 2026-08-27
-  with all nine cases passing twice. The post-push macOS CI record remains
-  **UNVERIFIED**, and Linux x64 GREEN remains **UNVERIFIED**; both CI records
-  remain publication blockers.
-- No GitHub remote, tag, release, or package publication is created by these
+- Publication readiness for `0.2.0` is **BLOCKED** until the mandatory live
+  Ubuntu x64 and macOS 15 arm64 canonical CI jobs complete with zero skips; see
+  `docs/releases/v0.2.0.md` for the explicit verification boundary.
+- Native local Darwin arm64 canonical execution is **VERIFIED** for the `0.2.0`
+  worktree on 2026-09-01 under CPython `3.14.7`, with all nine cases passing
+  twice. The post-push macOS CI record and Linux x64 GREEN remain
+  **UNVERIFIED**; both CI records remain publication blockers.
+- No `v0.2.0` tag, GitHub release, or package publication is created by these
   files.
 
 The repository's original code is Apache-2.0 licensed. Third-party components

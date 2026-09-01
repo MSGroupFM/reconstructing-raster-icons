@@ -37,13 +37,14 @@ The precise limits and accepted SVG subset are documented in
 
 ## Supported line
 
-Security fixes are prepared for the `0.1.x` line. Version `0.1.0` is currently
-a local release candidate. Publication readiness remains blocked pending the
+Security fixes are prepared for the `0.2.x` line. Version `0.2.0` is currently
+under local development. Publication readiness remains blocked pending the
 mandatory live Ubuntu x64 and macOS 15 arm64 canonical zero-skip CI runs.
-Native local Darwin arm64 canonical execution is **VERIFIED** on 2026-08-27:
-all nine cases passed twice. The post-push macOS CI record remains
-**UNVERIFIED**, and Linux x64 GREEN remains **UNVERIFIED**. This is not a claim
-that a public release or support service exists.
+Native local Darwin arm64 canonical execution is **VERIFIED** for the `0.2.0`
+worktree on 2026-09-01 under CPython `3.14.7`: all nine cases passed twice.
+The post-push macOS CI record remains **UNVERIFIED**, and the `0.2.0` Linux x64
+GREEN remains **UNVERIFIED**. This is not a claim that a public release or
+support service exists.
 
 ## Reporting a vulnerability
 

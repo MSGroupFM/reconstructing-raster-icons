@@ -82,6 +82,7 @@ REQUIRED_RELEASE_FILES = frozenset(
         "canonical-renderer.lock",
         "docs/provenance.md",
         "docs/releases/v0.1.0.md",
+        "docs/releases/v0.2.0.md",
         "package-lock.json",
         "package.json",
         "pyproject.toml",
@@ -102,6 +103,7 @@ REQUIRED_RELEASE_FILES = frozenset(
         "scripts/validate_skill.py",
         "src/reconstructing_raster_icons/__init__.py",
         "tests/goldens/acceptance-model-1.0.3.json",
+        "tests/test_python_support.py",
         "tests/test_release_package.py",
         "tests/test_vtracer_workflow_contract.py",
     }
@@ -659,7 +661,7 @@ def build_release(source: Path, output: Path, version: str) -> tuple[Path, Path,
     """Build, hash, safely extract, validate, and atomically publish a release."""
 
     if VERSION_RE.fullmatch(version) is None:
-        raise ReleaseBuildError("version must be a plain semantic version such as 0.1.0")
+        raise ReleaseBuildError("version must be a plain semantic version such as 1.2.3")
     source_root, source_fd = _open_root_directory(source, "source root")
     output_root = validate_output_root(source_root, output)
     try:
